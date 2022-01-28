@@ -1,0 +1,14 @@
+requests
+beautifulsoup4
+flatdict
+netmiko
+keyring
+progressbar
+pyhpeimc
+pysimplegui
+jinja2
+click
+xlwt
+pygal
+xmltodict
+ncclient

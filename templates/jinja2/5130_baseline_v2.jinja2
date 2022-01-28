@@ -1,0 +1,105 @@
+{% import "comware_macros.jinja2" as macros %}
+#
+{{ macros.access_switch_irf_config(switch_obj.stack_count) }}
+#
+---------------------------------------START-RUNNING-CONFIG-------------------------------------------------------------
+sysname {{ switch_obj.hostname }}
+#
+public-key local create rsa
+2048
+
+{# undo clock protocol #}
+{{ macros.timezone() -}}
+#
+lldp global enable
+#
+stp mode rstp
+stp pathcost-standard dot1t
+Y
+
+#
+{% if switch_obj.root_bridge | lower == "x" %}
+    stp instance 0 priority 4096
+{% endif %}
+stp global enable
+#
+stp port shutdown permanent
+#
+undo loopback-detection global enable vlan all
+#
+voice-vlan track lldp
+#
+password-recovery enable
+ip route-static 0.0.0.0 0 {{ switch_obj.default_gw }}
+#
+{{ macros.snmp_params(switch_obj.sys_location) -}}
+#
+{{ macros.ssh_parameters() -}}
+#
+{{ macros.banner() -}}
+#
+{{ macros.ntp_server() -}}
+#
+password-control login-attempt 3 exceed lock-time 15
+undo copyright-info enable
+{{ macros.info_center() -}}
+#
+{{ macros.user_admin() -}}
+#
+{{ macros.radius_scheme() -}}
+#
+line vty 0 63
+authentication-mode scheme
+user-role network-admin
+#
+{{ macros.line_aux(switch_obj.stack_count) -}}
+#
+{% if switch_obj.vlans is defined %}
+    {% for vlan_name, vlan_id in switch_obj.vlans.items() %}
+        vlan {{ vlan_id }}
+        name {{ vlan_name }}
+        #
+    {% endfor %}
+{% endif -%}
+vlan {{ switch_obj.mgmt_vlan }}
+name {{ switch_obj.mgmt_vlan_desc }}
+#
+#
+interface vlan-interface {{ switch_obj.mgmt_vlan }}
+ip address {{ switch_obj.ip_address.compressed }} {{ switch_obj.subnet_mask }}
+#
+# Client interfaces
+{{ macros.client_interfaces(switch_obj.access_pvid, switch_obj.stack_count, switch_obj.configure_firewall_intf) -}}
+#
+{% if switch_obj.root_bridge|lower == 'x' %}
+    {{ macros.root_downlinks(switch_obj.neighbor_downlink_cfg) -}}
+{% elif switch_obj.uplink_switch_ip|lower != 'o' %}
+    {{ macros.edge_dual_uplink(switch_obj.uplink_lacp_id, switch_obj.uplink_hostname, switch_obj.stack_count) -}}
+{% endif -%}
+#
+{% if switch_obj.configure_firewall_intf|lower == 'x' %}
+    {{ macros.firewall_interfaces(switch_obj.access_pvid, switch_obj.vpn_or_mpls) -}}
+{% endif -%}
+
+#
+save force
+#
+---------------------------------------END-RUNNING-CONFIG---------------------------------------------------------------
+
+---------------------------------------COMMANDS-AFTER-CONFIG-DEPLOYMENT-------------------------------------------------
+# display SSH public key:
+display public-key local rsa public
+#
+# check if "Stelnet server: Enable"
+display ssh server status
+#
+{% if switch_obj.stack_count|int > 1 %}
+    display irf
+    #
+    display irf configuration
+    #
+{% endif -%}
+display version
+#
+# Please save the results from these commands to the following file:
+{{ switch_obj.hostname }}_cmd_results_after_staging.txt

@@ -1,0 +1,385 @@
+{{# custom variables: #}}
+{% set radius_scheme_name = '<INSERT_NAME>' %}
+{% set radius_server_1 = 'AAA.BBB.CCC.DDD' %}
+{% set radius_server_2 = 'AAA.BBB.CCC.DDD' %}
+{% set radius_authentication_cipher = '<HASHED_VALUE>' %}
+{% set radius_accounting_cipher = '<HASHED_VALUE>' %}
+{% set syslog_ip = 'AAA.BBB.CCC.DDD' %}
+{% set ntp_ip = 'AAA.BBB.CCC.DDD' %}
+{% set admin_username = 'admin or change' %}
+{% set admin_pw_hash = '<HASHED_VALUE>' %}
+{% set sys_contact = '<INSERT_SYS_CONTACT>' %}
+{% set snmp_trap_ip = 'AAA.BBB.CCC.DDD' %}
+{% set snmp_trap_secret = '<CLEAR_TEXT' %}
+{% set snmp_v3_auth = '<CLEAR_TEXT' %}
+{% set snmp_v3_priv = '<CLEAR_TEXT' %}
+{% set WAN_VLAN_ID = "<WAN_VLAN_ID>" %}
+{% set MPLS_VLAN_ID = "<WAN_VLAN_ID>" %}
+
+{% macro banner() %}
+    header login %
+    {# <<< INSERT BANNER HERE >>> #}
+    %
+{% endmacro %}
+
+{% macro radius_scheme() %}
+    radius scheme {{ radius_scheme_name }}
+    primary authentication {{ radius_server_1 }}
+    primary accounting {{ radius_server_1 }}
+    secondary authentication {{ radius_server_2 }}
+    secondary accounting {{ radius_server_2 }}
+    key authentication cipher {{ radius_authentication_cipher }}
+    key accounting cipher {{ radius_accounting_cipher }}
+    user-name-format without-domain
+    retry 2
+    #
+    domain {{ radius_scheme_name }}
+    authentication login radius-scheme {{ radius_scheme_name }} local
+    authorization login radius-scheme {{ radius_scheme_name }} local
+    accounting login radius-scheme {{ radius_scheme_name }} local
+    #
+    domain default enable nps
+{% endmacro %}
+
+{% macro ntp_server() %}
+    ntp-service enable
+    ntp-service unicast-server {{ ntp_ip }} priority
+{% endmacro %}
+
+{% macro info_center() %}
+    info-center enable
+    info-center loghost {{ syslog_ip }}
+{% endmacro %}
+
+{% macro user_admin() %}
+    local-user {{ admin_username }} class manage
+    password hash {{ admin_pw_hash }}
+    service-type ssh terminal
+    authorization-attribute user-role network-admin
+{% endmacro %}
+
+{% macro timezone() %}
+    clock timezone UTC+1 add 01:00:00
+    clock summer-time CEST 02:00:00 March last Sunday 03:00:00 October last Sunday 01:00:00
+{% endmacro %}
+
+{% macro snmp_params(sys_location) %}
+    snmp-agent
+    snmp-agent sys-info contact {{ sys_contact }}
+    snmp-agent sys-info version v3
+    snmp-agent sys-info location {{ sys_location }}
+    snmp-agent target-host trap address udp-domain {{ snmp_trap_ip }} params securityname {{ snmp_trap_secret }} v3
+    privacy
+    snmp-agent usm-user v3 admin user-role network-admin simple authentication-mode sha {{ snmp_v3_auth }} privacy-mode
+    aes128 {{ snmp_v3_priv }}
+{% endmacro %}
+
+{% macro line_aux(stack_count) %}
+    {% if stack_count|int == 1 %}
+        line aux 0
+        authentication-mode scheme
+        user-role network-admin
+    {% else %}
+        line aux 0 {{ stack_count|int - 1 }}
+        authentication-mode scheme
+        user-role network-admin
+    {% endif -%}
+{% endmacro %}
+
+{% macro edge_single_uplink(lacp_id, uplink_hostname) %}
+    #Bridge-Aggregation
+    interface Bridge-Aggregation {{ lacp_id }}
+    description to_{{ uplink_hostname }}
+    port link-type trunk
+    port trunk permit vlan all
+    link-aggregation mode dynamic
+    #
+    #LACP Member Interfaces
+    interface Ten-GigabitEthernet1/0/49
+    description to_{{ uplink_hostname }}
+    port link-type trunk
+    port trunk permit vlan all
+    port link-aggregation group {{ lacp_id }}
+    #
+{% endmacro %}
+
+{% macro edge_dual_uplink(lacp_id, uplink_hostname, stack_count) %}
+    #Bridge-Aggregation
+    interface Bridge-Aggregation {{ lacp_id }}
+    description to_{{ uplink_hostname }}
+    port link-type trunk
+    port trunk permit vlan all
+    link-aggregation mode dynamic
+    #
+    {% if stack_count|int == 1 %}
+        #LACP Member Interfaces
+        interface Ten-GigabitEthernet1/0/49
+        description to_{{ uplink_hostname }}
+        port link-type trunk
+        port trunk permit vlan all
+        port link-aggregation group {{ lacp_id }}
+        #
+        interface Ten-GigabitEthernet1/0/50
+        description to_{{ uplink_hostname }}
+        port link-type trunk
+        port trunk permit vlan all
+        port link-aggregation group {{ lacp_id }}
+        #
+    {% else %}
+        #LACP Member Interfaces
+        interface Ten-GigabitEthernet1/0/49
+        description to_{{ uplink_hostname }}
+        port link-type trunk
+        port trunk permit vlan all
+        port link-aggregation group {{ lacp_id }}
+        #
+        interface Ten-GigabitEthernet2/0/49
+        description to_{{ uplink_hostname }}
+        port link-type trunk
+        port trunk permit vlan all
+        port link-aggregation group {{ lacp_id }}
+        #
+    {% endif %}
+{% endmacro %}
+
+{% macro root_downlinks(neighbor_downlink_cfg) %}
+    {% for neighbor_ip, neighbors_params in neighbor_downlink_cfg.items() -%}
+        #Bridge-Aggregation
+        interface Bridge-Aggregation {{ neighbors_params['lacp_id'] }}
+        description {{ neighbors_params['desc'] }}
+        port link-type trunk
+        port trunk permit vlan all
+        link-aggregation mode dynamic
+        #
+        {% for intf_id in neighbors_params['members'] %}
+            #LACP Member Interfaces
+            interface {{ intf_id }}
+            description {{ neighbors_params['desc'] }}
+            port link-type trunk
+            port trunk permit vlan all
+            port link-aggregation group {{ neighbors_params['lacp_id'] }}
+            #
+        {% endfor %}
+    {% endfor %}
+{% endmacro %}
+
+{# section for client interface range. Member 1 and 2 will be configured up to imc_port ID: 44 #}
+{# All other stack members will be configured from 1 up to 48 #}
+{% macro client_interfaces(access_pvid, stack_count, configure_firewall) %}
+    {% for memberId in range(stack_count|int) -%}
+        {% if ( (configure_firewall|lower == 'x') and (loop.index <= 2) ) %}
+            interface range GigabitEthernet{{ loop.index }}/0/1 to GigabitEthernet{{ loop.index }}/0/44
+        {% else %}
+            interface range GigabitEthernet{{ loop.index }}/0/1 to GigabitEthernet{{ loop.index }}/0/48
+        {% endif %}
+        port link-type access
+        {% if access_pvid  != "1" %}
+            port access vlan {{ access_pvid }}
+        {% endif %}
+        description LAN
+        broadcast-suppression 1
+        multicast-suppression 1
+        undo jumboframe enable
+        stp edged-port
+        stp port bpdu-protection enable
+        poe enable
+        #
+    {% endfor -%}
+{% endmacro %}
+
+{% macro firewall_interfaces(access_pvid, vpn_or_mpls) %}
+    {% if vpn_or_mpls|lower  == "vpn" %}
+        # create transfer VLAN for WAN
+        vlan 2000
+        name WAN
+        {% set WAN_NAME = "WAN-ISP-VPN" %}
+        {% set WAN_VLAN = WAN_VLAN_ID %}
+        #
+    {% elif vpn_or_mpls|lower  == "mpls" %}
+        vlan 3000
+        name MPLS
+        {% set WAN_NAME = "WAN-ISP-MPLS" %}
+        {% set WAN_VLAN = MPLS_VLAN_ID %}
+        #
+    {% endif %}
+    #WAN Interfaces
+    interface range GigabitEthernet1/0/45 GigabitEthernet2/0/45
+    description {{ WAN_NAME }}
+    port access vlan {{ WAN_VLAN }}
+    broadcast-suppression 1
+    multicast-suppression 1
+    undo jumboframe enable
+    stp edged-port
+    #
+    #MGMT Firewall Node 1
+    interface GigabitEthernet1/0/46
+    description MGMT-FW-Node-1
+    port access vlan {{ access_pvid }}
+    undo jumboframe enable
+    broadcast-suppression 1
+    multicast-suppression 1
+    stp edged-port
+    #
+    #MGMT Firewall Node 2
+    interface GigabitEthernet2/0/46
+    description MGMT-FW-Node-2
+    port access vlan {{ access_pvid }}
+    undo jumboframe enable
+    broadcast-suppression 1
+    multicast-suppression 1
+    stp edged-port
+    #
+    #Bridge-Aggregation for Firewall Node 1
+    interface Bridge-Aggregation 1
+    description FW-LACP-1
+    port link-type trunk
+    port trunk permit vlan all
+    link-aggregation mode dynamic
+    #
+    #Bridge-Aggregation for Firewall Node 2
+    interface Bridge-Aggregation 2
+    description FW-LACP-2
+    port link-type trunk
+    port trunk permit vlan all
+    link-aggregation mode dynamic
+    #
+    #LACP Member Interfaces for Firewall Node 1
+    interface range GigabitEthernet1/0/47 GigabitEthernet2/0/47
+    description LACP-FW-Node-1
+    port link-type trunk
+    port trunk permit vlan all
+    port link-aggregation group 1
+    #
+    #LACP Member Interfaces for Firewall Node 2
+    interface range GigabitEthernet1/0/48 GigabitEthernet2/0/48
+    description LACP-FW-Node-2
+    port link-type trunk
+    port trunk permit vlan all
+    port link-aggregation group 2
+    #
+{% endmacro %}
+
+{% macro access_switch_irf_config(stack_count) %}
+    # ---START-IRF-CONFIG---
+    # needs to be done, before inserting the actual configuration!
+    #
+    {% for memberId in range(stack_count|int) -%}
+        # -------------------------------------------------------------
+        # switch member: {{ loop.index }}
+        system-view
+        #
+        {% if loop.index >= 2 %}
+            # -------------------REBOOT-NEEDED!----------------------------
+            # irf member renumbering:
+            irf member 1 renumber {{ loop.index }}
+            save force
+            quit
+            reboot force
+            # wait for reboot to be done...
+            # -------------------------------------------------------------
+            #
+        {% endif %}
+        irf domain 10
+        #
+        interface range Ten-GigabitEthernet{{ loop.index }}/0/51 to Ten-GigabitEthernet{{ loop.index }}/0/52
+        shutdown
+        #
+        irf-port {{ loop.index }}/1
+        port group interface Ten-GigabitEthernet{{ loop.index }}/0/51
+        #
+        IRF-port {{ loop.index }}/2
+        port group interface Ten-GigabitEthernet{{ loop.index }}/0/52
+        #
+        irf member {{ loop.index }} priority {{ 33 - loop.index }}
+        #
+        irf-port-configuration active
+        #
+        interface range Ten-GigabitEthernet{{ loop.index }}/0/51 to Ten-GigabitEthernet{{ loop.index }}/0/52
+        undo shutdown
+        #
+        save force
+        #
+        # -------------------------------------------------------------
+    {% endfor -%}
+    # ---END-IRF-CONFIG---
+{% endmacro %}
+
+{% macro core_distribution_downlinks(neighbor_downlink_cfg, available_downlinks) %}
+    {% for neighbors_params in neighbor_downlink_cfg.values() -%}
+        # Bridge-Aggregation {{ neighbors_params['desc'] }}
+        interface Bridge-Aggregation {{ neighbors_params['lacp_id'] }}
+        description {{ neighbors_params['desc'] }}
+        port link-type trunk
+        port trunk permit vlan all
+        link-aggregation mode dynamic
+        #
+        # Member Interfaces {{ neighbors_params['desc'] }}
+        interface Ten-GigabitEthernet1/0/{{ loop.index }}
+        description {{ neighbors_params['desc'] }}
+        port link-type trunk
+        port trunk permit vlan all
+        port link-aggregation group {{ neighbors_params['lacp_id'] }}
+        #
+        interface Ten-GigabitEthernet2/0/{{ loop.index }}
+        description {{ neighbors_params['desc'] }}
+        port link-type trunk
+        port trunk permit vlan all
+        port link-aggregation group {{ neighbors_params['lacp_id'] }}
+        #
+    {% endfor %}
+{% endmacro %}
+
+{% macro create_vlan_interfaces(vlan_intf_data, vlans_data) %}
+    {% for vlan_id, ip_params in vlan_intf_data.items() -%}
+        interface vlan-interface {{ vlan_id }}
+        description {{ vlans_data[vlan_id] }}
+        ip address {{ ip_params[0] }} {{ ip_params[1] }}
+        #
+    {% endfor %}
+{% endmacro %}
+
+{% macro create_vlans(vlans_data) %}
+    {% for vlan_id, vlan_name in vlans_data.items() -%}
+        vlan {{ vlan_id }}
+        name {{ vlan_name }}
+        #
+    {% endfor %}
+{% endmacro %}
+
+{% macro ssh_parameters() %}
+    # enable ssh:
+    ssh server enable
+    #
+    # disable SSHv1 support:
+    undo ssh server compatible-ssh1x
+    #
+    # enable netconf over SSH:
+    netconf ssh server enable
+{% endmacro %}
+
+{% macro migration_link(migration_br_aggr_id) %}
+    # Migrations UPLINK Port Config (Connection from Distribution to old Core device, Ten1/0/48, Ten2/0/48)
+    # WARNING: STP WILL BE DISABLED ON THAT INTERFACES/BRIDGE-AGGREGATION!
+    # Bridge-Aggregation (Uplink-Aggregation) as ID: {{ migration_br_aggr_id }}
+    interface Bridge-Aggregation {{ migration_br_aggr_id }}
+    description Migration_Transit_Link
+    link-aggregation mode dynamic
+    port link-type trunk
+    port trunk permit vlan all
+    undo stp enable
+    #
+    interface Ten-GigabitEthernet1/0/48
+    description MIGRATION_TRANSIT_LINK
+    port link-type trunk
+    port trunk permit vlan all
+    undo stp enable
+    port link-aggregation group {{ migration_br_aggr_id }}
+    #
+    interface Ten-GigabitEthernet2/0/48
+    description MIGRATION_TRANSIT_LINK
+    port link-type trunk
+    port trunk permit vlan all
+    undo stp enable
+    port link-aggregation group {{ migration_br_aggr_id }}
+    #
+{% endmacro %}

@@ -1,0 +1,108 @@
+{% import "comware_macros.jinja2" as macros %}
+#
+sysname {{ switch_obj.hostname }}
+#
+public-key local create rsa
+2048
+
+{{ macros.timezone() -}}
+#
+lldp global enable
+#
+undo loopback-detection global enable vlan all
+#
+voice-vlan track lldp
+#
+system-working-mode StandardBridge
+{% for memberId in range(switch_obj.stack_count|int) -%}
+    fan prefer-direction slot {{ loop.index }} port-to-power
+{% endfor -%}
+#
+ip route-static 0.0.0.0 0 {{ switch_obj.default_gw }}
+#
+stp mode rstp
+stp pathcost-standard dot1t
+Y
+
+#
+{% if switch_obj.stp_prio | lower != "x" %}
+    stp instance 0 priority {{ switch_obj.stp_prio }}
+{% endif %}
+#
+stp global enable
+#
+stp port shutdown permanent
+#
+{{ macros.snmp_params(switch_obj.sys_location) -}}
+#
+{{ macros.ssh_parameters() -}}
+#
+{{ macros.banner() -}}
+#
+{{ macros.ntp_server() -}}
+#
+password-control login-attempt 3 exceed lock-time 15
+undo copyright-info enable
+#
+{{ macros.info_center() -}}
+#
+{{ macros.user_admin() -}}
+#
+{{ macros.radius_scheme() -}}
+#
+line vty 0 63
+authentication-mode scheme
+user-role network-admin
+#
+{{ macros.line_aux(switch_obj.stack_count) -}}
+#
+{% if switch_obj.vlans_data is defined %}
+    {{ macros.create_vlans(switch_obj.vlans_data) -}}
+{% endif -%}
+#
+vlan {{ switch_obj.mgmt_vlan }}
+name {{ switch_obj.mgmt_vlan_desc }}
+#
+interface vlan-interface {{ switch_obj.mgmt_vlan }}
+ip address {{ switch_obj.new_ip_address }} {{ switch_obj.subnet }}
+#
+{% if switch_obj.vlan_intf_data is defined %}
+    {{ macros.create_vlan_interfaces(switch_obj.vlan_intf_data, switch_obj.vlans_data) -}}
+{% endif -%}
+
+# Disable unused Management Ports
+{% for switch in range(switch_obj.stack_count|int) -%}
+    interface M-GigabitEthernet0/0/{{ loop.index - 1 }}
+    shutdown
+    #
+{% endfor %}
+
+{% if switch_obj.migration_link | lower == "x" %}
+    {{ macros.migration_link(switch_obj.migration_br_aggr_id) -}}
+{% endif -%}
+
+{% if switch_obj.neighbor_downlink_cfg is defined %}
+    # downstream switch interface section
+    {{ macros.core_distribution_downlinks(switch_obj.neighbor_downlink_cfg, switch_obj.available_downlinks) -}}
+{% else %}
+    {{ macros.edge_dual_uplink(switch_obj.uplink_lacp_id, switch_obj.uplink_hostname, switch_obj.stack_count) -}}
+{% endif %}
+
+#
+save force
+#
+---------------------------------------END-OF-FILE---------------------------------------------------------------
+
+
+---------------------------------------COMMANDS-AFTER-CONFIG-----------------------------------------------------
+#
+display public-key local rsa public
+#
+display irf
+#
+display irf configuration
+#
+display version
+#
+# Please save the results from these commands to the following file:
+{{ switch_obj.hostname }}_cmd_results_after_staging.txt
