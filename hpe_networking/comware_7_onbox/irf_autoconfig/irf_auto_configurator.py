@@ -123,6 +123,10 @@ def set_base_config(mgmt_vlan, startup_file):
     startup_file.write("\nauthorization-attribute user-role network-operator" + "\n")
     startup_file.write("\n#" + "\n")
 
+    # get if_index 1 and configure this as staging trunk interfaces:
+    interface_name = get_uplink_by_ifindex("1")
+    configure_staging_trunk_intf(interface_name, startup_file)
+
     # close startup file and set the startup config to the file: startup.cfg
     # startup_file.close()
 
@@ -309,6 +313,21 @@ def get_current_platform_irf_ports(member_id):
             print("PORT 1: {irf_port_1}".format(irf_port_1=irf_port_1))
             print("PORT 2: {irf_port_2}".format(irf_port_2=irf_port_2))
             return irf_port_1, irf_port_2
+
+
+def configure_staging_trunk_intf(if_name, startup_file):
+    """
+
+    :param if_name: corresponding interfaces of the index ID as str()
+    :param startup_file: startup_file reference
+    :return: None
+    """
+    staging_interface = "\ninterface {if_name} + \n".format(if_name=if_name)
+    startup_file.write(staging_interface)
+    startup_file.write("\ndescription TEMP_STAGING_TRUNK_INTERFACE" + "\n")
+    startup_file.write("\nport link-type trunk" + "\n")
+    startup_file.write("\nport trunk permit vlan all" + "\n")
+    startup_file.write("\n#" + "\n")
 
 
 def main():
