@@ -330,6 +330,28 @@ def configure_staging_trunk_intf(if_name, startup_file):
     startup_file.write("\n#" + "\n")
 
 
+def get_uplink_by_ifindex(if_index):
+    """
+    based on the comware CLI output from: more ifindex.dat | include " 1>"
+    Args:
+        if_index: ifindex to use
+
+    Examples:
+        ifindex 1 = Gi1/0/1 or Te1/0/1
+        ifindex 49 = Gi1/0/49 or Te1/0/49 or Hu1/0/49 or Fo1/0/49
+
+    Returns:
+
+    """
+    cli_cmd_if_filter = 'more ifindex.dat | include " {if_index}>"'.format(if_index=if_index)  # leading whitespace is needed!
+    if_index_cli_output = comware.CLI(cli_cmd_if_filter, False).get_output()
+    # print(if_index_cli_output)
+    # example output: ['<SWITCH_HOSTNAME>more ifindex.dat | include " 1>"', '<GigabitEthernet1/0/1 1>']
+    if_index_result = if_index_cli_output[1].replace('<', '').split()[0]
+    # example output: 'GigabitEthernet1/0/1'
+    return if_index_result
+
+
 def main():
     # get the irfMember.txt file from the TFTP/IMC
     print("GETTING IRF MEMBER MAPPING FILE: {irf_file} FROM TFTP SERVER...".format(irf_file=irf_file))
