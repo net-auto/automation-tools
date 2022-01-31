@@ -1,0 +1,94 @@
+---
+# name of the section at the inventory file 
+- hosts: switches
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+  - name: gather ios_facts
+    ios_facts:
+      gather_subset: min
+      gather_network_resources: 
+        - l2_interfaces
+        - l3_interfaces
+        - interfaces
+
+  - name: save running-conf to startup-conf and backup the current running-config to localhost
+#   backdir will be: /backup and will be created if doesn't exists
+    ios_config:
+      save_when: always
+      backup: yes
+    tags: backup
+
+  - name: debug network resources
+    debug:
+        var: ansible_net_model
+
+  - name: configure port for WLAN access points to native "VLAN8" and add "VLAN8" to allowed list
+    ios_l2_interfaces:
+      config:
+        - name: "{{ item.name }}"
+          trunk:
+            native_vlan: 8
+            allowed_vlans: 8
+      state: merged
+    loop: "{{ ansible_network_resources.interfaces }}"
+    when: 
+#     match interfaces with the description set
+      - item.description is defined
+#     match interfaces with the description: "FlexConnect" = WLAN access points
+      - item.description is search('FlexConnect')
+      - ansible_net_model is search("2960") or 
+        ansible_net_model is search("3560")
+
+  - name: configure client access port to new native VLAN 
+    ios_l2_interfaces:
+      config:
+        - name: "{{ item.name }}"
+          access:
+            vlan: 8
+      state: merged
+    loop: "{{ ansible_network_resources.interfaces }}"
+    when: 
+#     match to ports with no decription -> default for client host ports at customer site
+      - item.description is not defined
+#     match ports beginning with "Gi" (GigabitEthernet) 
+      - item.name is regex('^Gi')
+#     match on these models:
+      - ansible_net_model is search("2960") or 
+        ansible_net_model is search("3560")
+
+  - name: remove IP address from SVI "VLAN1" -> Interface/SVI will not be deleted and set to "shutdown"
+    ios_l3_interfaces:
+      config:
+        - name: Vlan1
+      state: deleted
+    when:
+#     match on these models:
+      - ansible_net_model is search("2960") or 
+        ansible_net_model is search("3560")
+
+  - name: configure IP address for SVI "VLAN8"
+    ios_l3_interfaces:
+      config:
+        - name: Vlan8
+          ipv4:
+          - address: "{{ item.ipv4.0.address.split()[0] }}/21"       
+      state: merged
+    loop: "{{ ansible_network_resources.l3_interfaces }}"
+    when: 
+#     search for former IP address of Vlan1 
+      - item.name is search('Vlan1')
+      - item.ipv4 is defined
+#     match on these models:
+      - ansible_net_model is search("2960") or 
+        ansible_net_model is search("3560")
+
+  - name: save running to startup
+    ios_config:
+      save_when: always
+    tags: 
+      - save
+        
+
+  

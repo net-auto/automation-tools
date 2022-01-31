@@ -1,0 +1,24 @@
+---
+- name: "Run command: {{ vtp_status }} for snapshot"
+  cli_command:
+    command: "{{ item }}"
+  register: command
+  loop:
+    - vtp_status
+    - vtp_pw
+    - ethch_summary
+    - sh_ver
+    - sh_inv
+    - sh_switch
+  tags:
+    - pyats
+
+- name: "set_fact {{ vtp_status }} for cli command"
+  set_fact:
+    vtp_status_parsed_output: "{{ vtp_status.stdout | pyats_parser(command, ansible_net_system ) }}"
+  tags:
+    - pyats
+
+- local_action: copy content={{ diff_output }} dest={{ inventory_hostname }}_diff
+  tags:
+    - pyats

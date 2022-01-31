@@ -1,0 +1,75 @@
+---
+  - name: perform show stackwise-virtual for checking existing config
+    ios_command:
+      commands: 
+        - command: "show stackwise-virtual"
+    register: show_swv
+    when:
+      - ansible_net_model is match('.*9500.*')
+    tags:
+      - vsw
+
+  - name: set_fact true/false for show stackwise-virtual command
+    set_fact:
+        show_swv_out: "{{ false if (show_swv.stdout[0] | regex_search('.*Enabled.*')) else true }}" 
+        cacheable: no 
+    when:
+      - ansible_net_model is match('.*9500.*')
+    tags:
+      - vsw
+
+  - name: debug var -> show_swv_out
+    debug:
+      var: show_swv_out
+    tags:
+      - vsw
+
+  - name: configure stackwise virtual for supported platforms, if not already configured
+    block:
+
+    - name: configure stackwise virtual domain and save config
+      ios_config:
+        lines:
+          - domain 1
+        parents: stackwise-virtual
+        save_when: always
+
+    - name: configure stackwise virtual member port 1
+      ios_config:
+        lines:
+          - description SWV Link
+          - stackwise-virtual link 1
+        parents: interface {{ swvl1 }}
+
+    - name: configure stackwise virtual member port 2
+      ios_config:
+        lines:
+          - description SWV Link
+          - stackwise-virtual link 1
+        parents: interface {{ swvl2 }}
+
+    - name: configure stackwise virtual dual-active-detection (dad) interface
+      ios_config:
+        lines:
+          - stackwise-virtual dual-active-detection
+          - description SWV FASTHELLO LINK
+        parents: interface {{ dad }}
+
+    - name: save running to startup 
+      ios_config:
+        save_when: always
+
+    - name: REBOOT SWITCH
+      ios_command:
+          commands:
+              - "reload\n"
+
+    - name: WAIT FOR SWTICH TO RETURN
+      wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        delay: 720
+      delegate_to: localhost
+
+    when:
+      - not show_swv_out

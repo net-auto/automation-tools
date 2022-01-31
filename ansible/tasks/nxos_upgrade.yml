@@ -1,0 +1,140 @@
+---
+- name: NXOS UPGRADE IMAGE IF NOT COMPLIANT
+  block:
+  - name: perform dir flash for file lookup and store to variable -> dir_flash
+    nxos_command:
+      commands: 
+        - command: "dir bootflash:"
+    register: dir_bootflash
+
+  - name: debug dir_bootflash
+    debug:
+      var: dir_bootflash
+
+  - name: COPY OVER NXOS KICKSTART VIA TFTP IF NOT EXSISTS
+    nxos_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ nxos_kick }} bootflash://sup-1/{{ nxos_kick }} vrf management"
+    when: 
+      - ansible_net_memfree_mb is defined
+      - ansible_net_memfree_mb > nxos_size
+      - dir_bootflash.stdout_lines is not search( nxos_kick )
+      - nxos_kick | length > 0
+    vars:
+       ansible_command_timeout: 3200
+
+  - name: COPY OVER NXOS IMAGE VIA TFTP IF NOT EXSISTS
+    nxos_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ nxos_img }} bootflash://sup-1/{{ nxos_img }} vrf management"
+    when: 
+      - ansible_net_memfree_mb is defined
+      - ansible_net_memfree_mb > nxos_size
+      - dir_bootflash.stdout_lines is not search( nxos_img )
+      - nxos_img | length > 0
+    vars:
+       ansible_command_timeout: 3200
+
+  - name: COPY OVER NXOS EPLD FILE VIA TFTP IF NOT EXSISTS
+    nxos_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ nxos_epld }} bootflash://sup-1/{{ nxos_epld }} vrf management"
+    when: 
+      - ansible_net_memfree_mb is defined
+      - ansible_net_memfree_mb > nxos_size
+      - nxos_epld | length > 0
+      - dir_bootflash.stdout_lines is not search( nxos_epld )
+    vars:
+       ansible_command_timeout: 3200
+
+  - name: CHECK MD5 HASH FOR NXOS IMAGE
+    nxos_command:
+      commands: 
+        - show file bootflash://sup-1/{{ nxos_img }} md5sum
+    register: md5_img_result
+    vars:
+       ansible_command_timeout: 300
+
+  - name: CHECK MD5 HASH FOR NXOS KICKSTART
+    nxos_command:
+      commands: 
+        - show file bootflash://sup-1/{{ nxos_kick }} md5sum
+    register: md5_kick_result
+    vars:
+       ansible_command_timeout: 300
+    when: 
+      - nxos_kick | length > 0
+
+  - name: CHECK MD5 HASH FOR NXOS EPLD FILE
+    nxos_command:
+      commands: 
+        - show file bootflash://sup-1/{{ nxos_epld }} md5sum
+    register: md5_result_epld
+    vars:
+       ansible_command_timeout: 300
+
+  - name: debug md5_result_out
+    debug:
+      var: nxos_img_md5
+
+  - name: debug md5_result_out
+    debug:
+      var: nxos_kick_md5
+
+  - name: save config 
+    nxos_config:
+      save_when: always
+
+  - name: INSTALL NEW NXOS KICKSTART AND IMAGE (n5k, install all nxos and kickstart)
+    nxos_command:
+       commands:
+        - command: "install all kickstart bootflash:{{ nxos_kick }} system bootflash:{{ nxos_img }}"
+          prompt: "(y/n)"
+          answer: "y"
+    when: 
+      - md5_img_result.stdout_lines is search( nxos_img_md5 )
+      - md5_kick_result.stdout_lines is search( nxos_kick_md5 )
+#      - ansible_net_model is match('.*C5596UP.*')
+      - nxos_img | length > 0
+    vars:
+       ansible_command_timeout: 1200
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{ inventory_hostname }}"
+      port: 22
+      delay: 600
+    delegate_to: localhost
+
+  - name: INSTALL NXOS EPLD FILE (install epld)
+    nxos_command:
+       commands:
+        - command: "install epld bootflash://sup-1/{{ nxos_epld }} module all"
+          prompt: "(y/n)"
+          answer: "y"
+    vars:
+       ansible_command_timeout: 1200
+    when:
+#   perform only if epld file provided
+      - nxos_epld | length > 0
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{ inventory_hostname }}"
+      port: 22
+      delay: 300
+    delegate_to: localhost
+    when:
+#   perform only if epld file provided
+      - nxos_epld | length > 0
+
+  - name: Gather min nxos facts for version check
+    nxos_facts:
+      gather_subset: min
+
+  - name: ASSERT THAT THE IOS VERSION IS CORRECT
+    assert:
+      that:
+        - ansible_net_version == nxos_desired_ver
+  
+

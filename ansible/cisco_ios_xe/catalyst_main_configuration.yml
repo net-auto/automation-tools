@@ -1,0 +1,215 @@
+---
+# name of the section at the inventory file (switches)
+- hosts: switches
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    - import_csv_path: <INSERT_IMPORT_CSV_PATH>
+    - import_task_path: <INSERT_IMPORT_TASK_PATH>
+
+  vars_prompt:
+      - name: filename
+        prompt: "please input the csv filename for the baseline config (e.g.: switch-baseline-import.csv)"
+        private: no 
+        default: ""
+
+      - name: filename_if
+        prompt: "please input the csv filename for the interfaces config (e.g.: interface-import.csv)"
+        private: no
+        default: "" 
+
+      - name: filename_vlan_list
+        prompt: "please input the csv filename for the vlan list (e.g.: vlan_list_import.csv -> if empty, no VLANs will be configured)"
+        private: no
+        default: "" 
+
+  tasks:
+
+# switch-basline csv import -> Ansible version: 2.8 needed! 
+  - name: Read parameters from CSV file for baseline config
+    read_csv:
+      path: "{{ import_csv_path }}/{{ filename }}"
+      delimiter: ';'
+      dialect: "excel"
+    register: sw_base_cfg
+    delegate_to: localhost
+    when:
+      - filename | length > 0
+    tags: 
+    - csv
+    - prio
+    - vsw
+    - backup
+
+# switch interface config csv import -> Ansible version: 2.8 needed! 
+  - name: Read parameters from CSV file for interface config
+    read_csv:
+      path: "{{ import_csv_path }}/{{ filename }}"
+      delimiter: ';'
+      dialect: "excel"
+    register: access_port_cfg
+    delegate_to: localhost
+    when:
+      - filename_if | length > 0
+
+# ----------------------------
+
+  #switch-basline csv import -> Ansible version: 2.8 needed! 
+  - name: Read VLAN parameters from CSV file and return a list
+    read_csv:
+      path: "{{ import_csv_path }}/{{ filename }}"
+      delimiter: ';'
+      dialect: "excel"
+    register: vlan_list_csv
+    delegate_to: localhost
+    when:
+      - filename_vlan_list | length > 0
+    tags:
+      - vlan
+# ----------------------------
+
+  - name: gather switch facts
+    ios_facts:
+#    register: ios_facts
+#      gather_subset: 
+#        - "!interfaces"
+#        - "!config"
+    tags: 
+      - prio
+      - update
+      - vsw
+      - vlan
+      - vpc
+      - backup
+
+  - name: DEBUG ansible_net_model
+    debug:
+      var: ansible_net_model
+    tags:
+      - update
+
+  - name: DEBUG ansible_net_model
+    debug:
+      msg: "MODEL MATCH!!!!!"
+    tags:
+      - update
+    when: ansible_net_model is search('C9300L')
+
+  - name: DEBUG ansible_net_version
+    debug:
+      var: ansible_net_version
+    tags:
+      - update
+
+  - name: perform update if needed based on the platform (Cat3k)
+    import_tasks: "{{ import_task_path }}/cat3k_ios_upgrade.yml"
+    when:
+      - ansible_net_version != ios_ver1
+      - ansible_net_model is search("3560")
+    tags:
+      - update
+
+  - name: perform update if needed based on the platform (Cat9k3L)
+    import_tasks: "{{ import_task_path }}/cat9k3L_ios_upgrade.yml"
+    when:
+      - ansible_net_model is search('C9300L')
+      - ansible_net_version != ios_ver_9300L
+
+    tags:
+      - update
+
+  - name: perform update if needed based on the platform (Cat9k3)
+    import_tasks: "{{ import_task_path }}/cat9k3_ios_upgrade.yml"
+    when:
+      - ansible_net_model is search('9300-')
+      - ansible_net_version != ios_ver2  
+    tags:
+      - update
+
+  - name: perform update if needed based on the platform (Cat9k2)
+    import_tasks: "{{ import_task_path }}/cat9k2_ios_upgrade.yml"
+    when:
+      - ansible_net_version != ios_ver3
+      - ansible_net_model is match('.*9200.*')
+    tags:
+      - update
+
+  - name: create VLANs based on provided list
+    ios_vlans:
+      config:
+        - vlan_id: "{{ vlanList.vlan | trim }}"
+          name: "{{ vlanList.name | trim }}"
+      state: merged
+    loop: "{{ vlan_list_csv.list }}"
+    loop_control:
+      index_var: index
+      loop_var: vlanList
+    when:
+      - filename_vlan_list | length > 0
+      - vlanList.vlan | trim | length > 0
+    tags:
+      - vlan
+
+  - name: execute interface configuration tasks before baseline config
+    include_tasks: "{{ import_task_path }}/interface-port-config-csv.yml"
+    loop: "{{ access_port_cfg.list }}"
+    loop_control:
+      index_var: index
+      loop_var: ifList
+    when: 
+        - filename_if | length > 0
+
+
+  - name: (Cat9500) execute interface configuration tasks before baseline config
+    include_tasks: "{{ import_task_path }}/cat9500-interface-port-config.yml"
+    loop: "{{ access_port_cfg.list }}"
+    loop_control:
+      index_var: index
+    when: 
+        - filename_if | length > 0
+        - item.serialnum | length > 0
+        - ansible_net_model is match('.*9500.*')
+    # execute only if vars are provided
+
+#-----------------------------------------------------------------------------------
+  - name: (Cat9k5) configure stackwise virtual baseline
+    include_tasks: 
+      file: "{{ import_task_path }}/cat9500-stackwise-virtual.yml"
+      apply:
+        tags: vsw
+#    loop: "{{ sw_base_cfg.list }}"
+#    loop_control:
+#      index_var: index
+#      loop_var: item3
+    when: 
+        - show_swv_out is defined
+        - show_swv_out
+        - ansible_net_model is match('.*9500.*')
+#        - item3.serial_number == ansible_net_serialnum
+        - ansible_net_stacked_serialnums is search( item3.serial_number )
+        - item3.stackwise_virtual == "y"
+    tags:
+      - vsw
+
+
+#-----------------------------------------------------------------------------------
+
+  - name: (Cat9k5, Cat9k3 and Cat9k2) execute baseline configuration tasks 
+    include_tasks: "{{ import_task_path }}/catalyst-switch-baseline.yml"
+    loop: "{{ sw_base_cfg.list }}"
+    loop_control:
+      index_var: index
+      loop_var: item2
+    when: 
+        - filename | length > 0
+        - item2.serial_number | length > 0
+        - (ansible_net_model is match('.*9300.*')) or
+          (ansible_net_model is match('.*9200.*'))
+    tags:
+      - backup
+
+  - name: always save running to startup
+    ios_config:
+      save_when: always
+    vars:
+      ansible_command_timeout: 300

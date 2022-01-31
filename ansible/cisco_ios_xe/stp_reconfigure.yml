@@ -1,0 +1,89 @@
+# name of the section at the inventory file (switches)
+- hosts: switches
+  gather_facts: false
+  vars:
+    stp_root_bridge: <INSERT_MATCHING_SWITCH_HOSTNAME>
+  roles:
+    - ansible-pyats
+
+  vars:
+# customize to your needs:
+    backup_dir: "backup_dir/"
+    command: show spanning-tree detail
+    
+  tasks:
+
+  - name: gather ios switch facts
+    ios_facts:
+
+  - name: save running-config to startup-config and backup the current running-config to localhost
+#   backdir will be: /backup and will be created if doesn't exists
+    ios_config:
+      save_when: always
+      backup: yes
+    tags: backup
+
+  - name: "Run command: {{ command }} for before snapshot"
+    cli_command:
+      command: "{{ command }}"
+    register: cli_output_before
+
+  - name: "set_fact for before snapshot"
+    set_fact:
+      parsed_output_before: "{{ cli_output_before.stdout | pyats_parser(command, ansible_net_system ) }}"
+    when:
+      - ansible_net_system is defined
+
+
+######INSERT CHANGE HERE##########
+
+  - name: configure spanning-tree options and priority (4096) for root bridge
+    ios_config:
+      lines:
+        - spanning-tree mode rapid-pvst
+        - spanning-tree vlan 1-4094 priority 4096
+        - spanning-tree loopguard default
+        - spanning-tree logging
+    when:
+      - ansible_net_hostname == {{ stp_root_bridge }}
+
+  - name: Wait 600 seconds for target connection with delay of 60sec
+    wait_for_connection:
+      delay: 30
+
+  - name: configure spanning-tree options and priority (32768) for non-root bridges
+    ios_config:
+      lines:
+        - spanning-tree mode rapid-pvst
+        - spanning-tree vlan 1-4094 priority 32768
+        - spanning-tree loopguard default
+        - spanning-tree logging
+    when:
+      - ansible_net_hostname != {{ stp_root_bridge }}
+
+  - name: Wait 600 seconds for target connection with delay of 60sec
+    wait_for_connection:
+      delay: 60
+
+##################################
+
+  - name: "Run command: {{ command }} for after snapshot"
+    cli_command:
+      command: "{{ command }}"
+    register: cli_output_after
+
+  - name: "set_fact for after snapshot"
+    set_fact:
+      parsed_output_after: "{{ cli_output_after.stdout | pyats_parser(command, ansible_net_system ) }}"
+    when:
+      - ansible_net_system is defined
+
+  - name: Diff current and snapshot
+    set_fact:
+      diff_output: "{{ parsed_output_before | pyats_diff(parsed_output_after) }}"
+
+  - local_action: copy content={{ diff_output }} dest={{ backup_dir }}{{ inventory_hostname }}_diff
+
+  - name: save running-config to startup-config 
+    ios_config:
+      save_when: always

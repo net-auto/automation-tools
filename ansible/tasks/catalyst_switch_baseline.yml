@@ -1,0 +1,637 @@
+---
+  - name: configure switch based on the csv file
+    block:
+    - name: configure hostname and domain name
+      ios_system:
+        hostname: "{{ item2.switch_name | lower  }}"
+        domain_name: <INSERT_DOMAIN_FQDN>
+
+    - name: configure name servers
+      ios_system:
+        name_servers:
+          - <INSERT_NAMESERVER_FQDN>
+          - <INSERT_NAMESERVER_FQDN>
+  # ----------------------------
+    - name: configure global configuration
+      ios_config:
+        src: "./configs/cat9k_global_config.cfg"
+        match: line
+    vars:
+      snmp_v3_user: <INSERT_SNMP_v3_USERNAME>
+      snmp_v3_auth: <INSERT_SNMP_AUTH_SECRET>
+      snmp_v3_encr: <INSERT_SNMP_ENCRYPTION_SECRET> 
+      snmp_v3_acl: <INSERT_SNMP_ACL_NAME>
+      ntp_srv_1: <INSERT_FIRST_NTP_SERVER>
+      ntp_srv_2: <INSERT_SECOND_NTP_SERVER>
+      banner_motd: <INSERT_BANNER_MOTD_AS_MULTILINE>
+      tacacs_1_server_ip: <INSERT_TACACS_SERVER_1_IP>
+      tacacs_1_key: <INSERT_TACACS_SERVER_1_KEY>
+      tacacs_1_domain: <INSERT_TACACS_SERVER_1_DOMAIN>
+      tacacs_2_server_ip: <INSERT_TACACS_SERVER_2_IP>
+      tacacs_2_key: <INSERT_TACACS_SERVER_2_KEY>
+      tacacs_2_domain: <INSERT_TACACS_SERVER_2_DOMAIN>
+      snmp_v3_acl_host_prefix: <INSERT_MONITORING_ACL_PREFIX>
+      snmp_v3_host_wildcard_mask: <INSERT_MONITORING_ACL_WILDCARD_MASK>
+      logging_host: <INSERT_LOGGING_HOST>
+      smart_license_server_ip: <INSERT_SMART_LICSENSE_SERVER_IP>
+
+  # ----------------------------
+
+#   2 possible choices: 
+#   - root = priority 4096 for all VLANs
+#   - non_root = priority 32768 for all VLANs
+
+    - name: configure spanning-tree options and priority (4096) for root bridge
+      ios_config:
+        lines:
+          - spanning-tree mode rapid-pvst
+          - spanning-tree vlan 1-4094 priority 4096
+          - spanning-tree loopguard default
+          - spanning-tree logging
+          - spanning-tree pathcost method long
+      when:
+        - item2.stp_role == "root"
+        - item2.stp_mode == "rstp"
+
+    - name: configure spanning-tree options and priority (32768) for non-root bridges
+      ios_config:
+        lines:
+          - spanning-tree mode rapid-pvst
+          - spanning-tree vlan 1-4094 priority 32768
+          - spanning-tree loopguard default
+          - spanning-tree logging
+          - spanning-tree pathcost method long
+      when:
+        - item2.stp_role == "non_root"
+        - item2.stp_mode == "rstp"
+  
+    - name: configure MST domain
+      ios_config:
+        lines:
+          - name {{ item2.vtp_pass | upper }}
+        parents: spanning-tree mst configuration
+      when:
+        - item2.stp_role == "non_root"
+        - item2.stp_mode == "mst"
+
+    - name: configure spanning-tree options and priority (32768) for non-root bridges
+      ios_config:
+        lines:
+          - spanning-tree mode mst
+          - spanning-tree vlan 1-4094 priority 32768
+          - spanning-tree loopguard default
+          - spanning-tree logging
+          - spanning-tree pathcost method long
+      when:
+        - item2.stp_role == "non_root"
+        - item2.stp_mode == "mst"
+
+    - name: configure SNMPv3
+      ios_config:
+        lines:
+          - snmp-server ifindex persist
+          - snmp-server group RW v3 priv write v1default
+          - snmp-server group RW v3 priv context vlan- match prefix
+          - snmp-server group RO v3 priv
+          - snmp-server group RO v3 priv context vlan- match prefix
+        after:
+          - snmp-server user {{ snmp_v3_user }} RW v3 auth sha {{ snmp_v3_auth }} priv aes 128 {{ snmp_v3_encr }} access {{ snmp_v3_acl }}
+
+    - name: create/map management VLAN, when not VID 1
+      ios_config:
+        lines:
+          - name MGMT
+        parents: vlan {{ item2.mgmt_vid }}
+      when:
+        - item2.mgmt_vid != "1"
+      ignore_errors: yes
+
+    - name: configure NTP server
+      ios_config:
+        lines:
+          - ntp server {{ ntp_srv_1 }}
+          - ntp server {{ ntp_srv_2 }}
+        match: line
+  # ----------------------------
+    - name: Enable LLDP service
+      ios_lldp:
+        state: present
+  # ----------------------------
+    - name: configure NTP_SERVERS access rights
+      ios_config:
+        lines:
+          - ntp access-group peer NTP_SERVERS
+        before:
+          - no ip access-list standard NTP_SERVERS
+        after:
+          - ip access-list standard NTP_SERVERS
+          - remark Valid NTP Servers
+          - permit {{ ntp_srv_1 }}
+          - permit {{ ntp_srv_1 }}
+  # ----------------------------
+    - name: configure NTP_CLIENTS access rights
+      ios_config:
+        lines:
+          - ntp access-group serve-only NTP_CLIENTS
+        before:
+          - no ip access-list standard NTP_CLIENTS
+        after:
+          - ip access-list standard NTP_CLIENTS
+          - remark Which NTP Clients do we allow
+          - remark None
+          - deny any
+
+    - name: configure ntp access-group
+      ios_config:
+        lines:
+          - ntp access-group peer NTP_SERVERS
+          - ntp access-group serve-only NTP_CLIENTS
+        match: line
+
+  # ------ "VTP" section: ------
+
+    - name: configure VTP primary vlan (server relevant)
+      ios_command:
+        commands:
+          - vtp primary vlan force
+      when:
+        - item2.vtp_mode == "server"
+
+    - name: configure VTP (v3)
+      ios_config:
+        lines:
+          - vtp domain {{ item2.switch_name[:6] | upper }}
+          - vtp password {{ item2.switch_name[:6] | lower }}
+          - vtp version 3
+          - vtp mode {{ item2.vtp_mode }} vlan
+          - vtp mode off mst
+          - vtp mode off unknown
+          - vtp pruning
+      when:
+        - item2.vtp_ver == "v3"
+
+    - name: configure VTP (v2)
+      ios_config:
+        lines:
+          - vtp mode transparent
+          - vtp domain {{ item2.switch_name[:6] | upper }}
+          - vtp password {{ item2.switch_name[:6] | lower }}
+          - vtp version 2
+          - vtp mode {{ item2.vtp_mode }} vlan
+      when:
+        - item2.vtp_ver == "v2"
+
+    - name: configure no device-tracking policy based on IOS version 16
+      ios_config:
+        lines:
+          - trusted-port
+          - device-role switch
+        parents: device-tracking policy NoDeviceTracking
+        before: no device-tracking policy NoDeviceTracking
+        match: line
+      when:
+        - ansible_net_version is match('^16.*')
+
+    - name: remove device-tracking based on IOS version 15
+      ios_config:
+        lines:
+          - no ip device tracking
+          - no ip device tracking probe delay 10
+          - no ip device tracking probe use-svi
+          - no ip device tracking probe auto-source override
+        match: line
+      when:
+        - ansible_net_version is match('^15.*')
+
+  # ----------------------------
+    - name: configure the login banner
+      ios_banner:
+        banner: login
+        text: |
+          **************************************************************************
+          * This is a proprietary system, NOT for public or personal use. This     *
+          * system is actively monitored.                                          *
+          * USE OF THIS SYSTEM WITHOUT OR IN EXCESS OF THE PROPER AUTHORIZATION    *
+          * MAY SUBJECT THE USER TO DICIPLINE AND/OR CIVIL AND CRIMINAL PENALTIES! *
+          **************************************************************************
+        state: present
+  # ----------------------------
+    - name: configure the exec banner
+      ios_banner:
+        banner: exec
+        text: |
+          NOTE: Daily at 19:00 UTC Time the config will be automatically saved via an IOS kron job (wr mem)!
+        state: present
+  # ----------------------------
+    - name: configure the motd banner
+    # "at" symbol was removed due to reserved symbol issue
+      ios_banner:
+        banner: motd
+        text: |
+          {{ banner_motd }}
+        state: present
+  # ----------------------------
+    - name: set access-list standard for VTY access
+      ios_config:
+        lines:
+          - remark Restrict Management Access via SSH
+          - permit 10.0.0.0 0.255.255.255
+          - permit 172.16.0.0 0.15.255.255
+          - permit 192.168.0.0 0.0.255.255
+        parents: ip access-list standard VTY
+        before: no ip access-list standard VTY
+        match: exact
+        replace: block
+
+# added vrf-also for OOB access during staging
+    - name: set line vty 0 15
+      ios_config:
+        lines:
+          - no password
+          - login authentication VTY
+          - authorization exec VTY
+          - authorization commands 15 VTY
+          - transport input ssh
+          - transport preferred none
+        parents: line vty 0 15
+        match: line
+
+    - name: set line con 0
+      ios_config:
+        lines:
+          - no password
+          - login authentication CONSOLE
+          - authorization exec CONSOLE
+          - transport preferred none
+          - logging synchronous
+          - transport output telnet ssh
+        parents: line con 0
+        match: exact
+
+    - name: set tacacs server {{ tacacs_1_domain }}
+      ios_config:
+        lines:
+          - address ipv4 {{ tacacs_1_ip }}
+          - key {{ tacacs_1_key }}
+          - timeout 2
+        parents: tacacs server {{ tacacs_1_domain }}
+        match: line
+
+    - name: set tacacs server {{ tacacs_2_domain }}
+      ios_config:
+        lines:
+          - address ipv4 {{ tacacs_2_ip }}
+          - key {{ tacacs_2_key }}
+          - timeout 2
+        parents: tacacs server {{ tacacs_2_domain }}
+        match: line
+  # ----------------------------
+    - name: set aaa group server tacacs+ ISE-TACACS
+      ios_config:
+        lines:
+          - server name {{ tacacs_1_domain }}
+          - server name {{ tacacs_2_domain }}
+        parents: aaa group server tacacs+ ISE-TACACS
+        match: line
+
+    - name: set ip tacacs source-interface
+      ios_config:
+        lines:
+          - ip tacacs source-interface vlan {{ item2.mgmt_vid }}
+        parents: aaa group server tacacs+ ISE-TACACS
+        match: line
+      when:
+        - item2.switch_type == "l3"
+
+  # ----------Monitoring ACLs------------------
+    - name: "set access-list standard {{ snmp_v3_acl }}"
+      ios_config:
+        lines:
+          - permit {{ snmp_v3_acl_host_prefix }} {{ snmp_v3_host_wildcard_mask }}
+        parents: "ip access-list standard {{ snmp_v3_acl }}"
+        before: "no ip access-list standard {{ snmp_v3_acl }}"
+        match: exact
+        replace: block
+  # ----------------------------
+    - name: set KRON backup job policy-list
+      ios_config:
+        lines:
+          - cli wr mem
+        parents: kron policy-list SAVECONFIG
+        match: exact
+  # ----------------------------
+    - name: set KRON backup job occurrence
+      ios_config:
+        lines:
+          - policy-list SAVECONFIG
+        parents: kron occurrence DAILY at 19:00 recurring
+        match: exact
+  # ----------------------------
+    - name: configure logging setting
+      ios_config:
+        lines:
+          - logging on
+          - no logging console
+          - logging buffered 512000 informational
+          - logging trap informational
+          - logging monitor debugging
+          - logging host {{ logging_host }}
+          - logging count
+        match: line
+
+    - name: set archive log settings
+      ios_config:
+        lines:
+          - hidekeys
+          - logging enable
+          - notify syslog
+          - logging size 1000
+        parents:
+          - archive
+          - log config
+        match: line
+
+    - name: remove call-home profile CiscoTAC-1 for Catalyst 9k series switches
+      ios_config:
+        lines:
+          - no active
+        parents:
+          - call-home
+          - profile CiscoTAC-1
+        match: exact
+      when:
+        - (ansible_net_model is match('.*9300.*')) or
+          (ansible_net_model is match('.*9200.*'))
+
+    - name: configure smart license satellite for Catalyst 9k series switches
+      ios_config:
+        lines:
+          - reporting smart-licensing-data
+          - destination transport-method http
+          - destination address http {{ smart_license_server_ip }}
+          - active
+        parents:
+          - call-home
+          - profile Satellite
+        match: exact
+      when:
+        - (ansible_net_model is match('.*9300.*')) or
+          (ansible_net_model is match('.*9200.*'))
+
+    - name: configure mgmt VLAN IP interface
+      ios_config:
+        lines:
+          - ip address {{ item2.mgmt_ip }}
+          - no ip route-cache
+          - no shutdown
+        parents: interface vlan {{ item2.mgmt_vid }}
+        match: line
+
+    - name: configure the default route for Layer 2 switches
+      ios_config:
+        lines:
+          - ip default-gateway {{ item2.def_gw_global }}
+        match: line
+      when:
+        - item2.switch_type == "l2"
+
+    - name: remove routing feature (L2 device) from Catalyst 9k series switches
+      ios_config:
+        lines:
+          - no ip routing
+        match: line
+      when:
+        - item2.switch_type == "l2"
+        - (ansible_net_model is match('.*9300.*')) or
+          (ansible_net_model is match('.*9200.*'))
+
+    - name: configure static default route for L3 device for the main routing table
+      ios_config:
+        lines:
+          - ip route 0.0.0.0 0.0.0.0 {{ item2.def_gw_global }}
+        match: line
+      when:
+        - item2.switch_type == "l3"
+
+    - name: configure switch stack priority switch 1 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 1 priority 15
+            prompt: "[y/n]"
+            answer: "yes"
+      tags: prio
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*')) or
+        (ansible_net_model is match('.*9500.*'))
+      - ansible_net_stacked_serialnums|length >= 1
+
+    - name: configure switch stack priority switch 2 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 2 priority 14
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*')) or
+        (ansible_net_model is match('.*9500.*'))
+      - ansible_net_stacked_serialnums|length >= 2
+
+    - name: configure switch stack priority switch 3 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 3 priority 13
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*')) or
+        (ansible_net_model is match('.*9500.*'))
+      - ansible_net_stacked_serialnums|length >= 3
+
+    - name: configure switch stack priority switch 4 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 4 priority 12
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*')) or
+        (ansible_net_model is match('.*9500.*'))
+      - ansible_net_stacked_serialnums|length >= 4
+
+    - name: configure switch stack priority switch 5 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 5 priority 11
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*'))
+      - ansible_net_stacked_serialnums|length >= 5
+
+    - name: configure switch stack priority switch 6 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 6 priority 10
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*'))
+      - ansible_net_stacked_serialnums|length >= 6
+
+    - name: configure switch stack priority switch 7 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 7 priority 9
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*'))
+      - ansible_net_stacked_serialnums|length >= 7
+
+    - name: configure switch stack priority switch 8 for Catalyst 9k series switches
+      ios_command:
+        commands:
+          - command: switch 8 priority 8
+            prompt: "[y/n]"
+            answer: "yes"
+      when:
+      - (ansible_net_model is match('.*9300.*')) or
+        (ansible_net_model is match('.*9200.*'))
+      - ansible_net_stacked_serialnums|length >= 8
+
+    - name: configure ip dhcp snooping for new sites only
+      ios_config:
+        lines:
+          - ip dhcp snooping
+          - ip dhcp snooping vlan 1-4094
+          - no ip dhcp snooping information option
+          - ip dhcp snooping database dhcpsnooping.db
+        match: line
+      when:
+        - item2.site_new_old == "new"
+
+    - name: configure aaa
+      ios_config:
+        src: "./configs/cat9k_aaa.cfg"
+
+    - name: execute show inventory and write out to file
+      ios_command:
+        commands:
+          - show inventory
+      register: show_inventory_out
+
+    - copy: content="{{ show_inventory_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_inventory.txt"
+      when:
+        - show_inventory_out.stdout_lines != ""
+
+    - name: execute show version and write out to file
+      ios_command:
+        commands:
+          - show version
+      register: show_version_out
+
+    - copy: content="{{ show_version_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_version.txt"
+      when:
+        - show_version_out.stdout_lines != ""
+
+    - name: execute show snmp user and write out to file
+      ios_command:
+        commands:
+          - show snmp user
+      register: show_snmp_user_out
+
+    - copy: content="{{ show_snmp_user_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_snmp_user.txt"
+      when:
+        - show_snmp_user_out.stdout_lines != ""
+
+    - name: execute show interface status and write out to file
+      ios_command:
+        commands:
+          - show interface status
+      register: show_interface_status_out
+
+    - copy: content="{{ show_interface_status_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_interface_status.txt"
+      when:
+        - show_interface_status_out.stdout_lines != ""
+
+    - name: execute show vtp status and write out to file
+      ios_command:
+        commands:
+          - show vtp status
+      register: show_vtp_status_out
+
+    - copy: content="{{ show_vtp_status_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_vtp_status.txt"
+      when:
+        - show_vtp_status_out.stdout_lines != ""
+
+    - name: execute show vtp password and write out to file
+      ios_command:
+        commands:
+          - show vtp password
+      register: show_vtp_pw_out
+
+    - copy: content="{{ show_vtp_pw_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_vtp_pw.txt"
+      when:
+        - show_vtp_pw_out.stdout_lines != ""
+
+    - name: save running to startup and backup config to localhost
+      ios_config:
+        save_when: always
+        backup: yes
+        backup_options:
+          filename: "{{ item2.switch_name }}-{{ ansible_net_serialnum }}-running.cfg"
+          dir_path: "{{ backup_dir }}"
+      vars:
+        ansible_command_timeout: 300
+      tags: backup
+
+    - name: execute show ip ssh to verify successful SSH configuration
+      ios_command:
+        commands:
+          - show ip ssh
+      register: show_ip_ssh
+
+    - copy: content="{{ show_ip_ssh.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_ip_ssh.txt"
+      when:
+        - show_ip_ssh.stdout_lines != ""
+
+    - name: execute show switch to verify the switch stack priority
+      ios_command:
+        commands:
+          - show switch
+      register: show_switch
+
+    - copy: content="{{ show_switch.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_switch.txt"
+      when:
+        - show_switch.stdout_lines != ""
+
+    - name: execute show etherchannel summary to verify successful port-channel config
+      ios_command:
+        commands:
+          - show etherchannel summary
+      register: show_etherch
+
+    - copy: content="{{ show_etherch.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_etherch.txt"
+      when:
+        - show_etherch.stdout_lines != ""
+
+    - name: compare saved config with running config
+      ios_config:
+        diff_against: intended
+        intended_config: "{{ lookup('file', '{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}-running.cfg') }}"
+      ignore_errors: yes
+
+    when:
+#      - item2.serial_number == ansible_net_serialnum
+      - ansible_net_stacked_serialnums is search( item2.serial_number )
+
+
+
+      

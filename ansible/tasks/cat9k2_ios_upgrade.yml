@@ -1,0 +1,80 @@
+---
+# global section tasks
+
+- name: EXECUTE 'dir flash:' FOR IMAGE CHECKING
+  ios_command:
+    commands: 
+      - command: "dir flash:"
+  register: dir_flash
+
+# section for IOS-XE upgrade Cat9200 platform (ios 3)
+- name: (Cat9200) UPGRADE IOS-XE LITE IMAGE IF NOT COMPLIANT
+  block:
+
+  - name: REQUEST SOFTWARE CLEAN, IF THERE IS NOT ENOUGH SPACE
+    ios_command:
+      commands: 
+        - command: "install remove inactive"
+    when: ansible_net_memfree_mb < ios_img3_size
+
+  - name: COPY IMAGE IF ENOUGH SPACE AND IMAGE NOT EXSISTS VIA TFTP
+    ios_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ ios_img3 }} flash:{{ ios_img3 }} vrf Mgmt-vrf"
+          prompt: "{{ ios_img3 }}"
+          answer: "\n"
+    when: 
+      - ansible_net_memfree_mb > ios_img3_size
+      - dir_flash.stdout_lines is not search( ios_img3 )
+
+  - name: CHECK MD5 HASH FOR NEW IMAGE
+    ios_command:
+      commands: 
+        - verify /md5 flash:{{ ios_img3 }}
+    register: md5_result
+    vars:
+       ansible_command_timeout: 300
+
+  - name: set boot variable (install mode)
+    ios_command:
+      commands: 
+        - command: "boot system flash:packages.conf"
+    when: 
+      - ansible_net_image is not search('flash:packages.conf')
+
+  - name: save running to startup
+    ios_config:
+      save_when: always
+
+  - name: EXECUTE 'show boot system' FOR BOOT VAR CHECKING
+    ios_command:
+      commands: 
+        - command: "show boot system"
+    register: boot_var
+
+  - name: INSTALL NEW IOS-XE LITE IMAGE (install add, INSTALL mode)
+    ios_command:
+       commands:
+          - command: "install add file flash:{{ ios_img3 }} activate commit prompt-level none"
+    vars:
+       ansible_command_timeout: 300
+    when:
+      - md5_result.stdout_lines is search( ios_md5_3 )
+      - boot_var.stdout_lines is search( boot_var )
+
+# reboot will be performed after install add
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{ inventory_hostname }}"
+      port: 22
+      delay: 60
+    delegate_to: localhost
+
+  - name: ASSERT THAT THE IOS-XE LITE VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver3 == ansible_net_version
+
+
+

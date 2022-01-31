@@ -1,0 +1,50 @@
+---
+#-------------Cat9500-Port-Config-Section------------
+- name: configure switch based on hostname_sw
+  block:
+  - name: configure port-channel ID  (Cat9500)
+    ios_config:
+      lines:
+        - description SWITCH {{ item.description }}
+        - switchport
+        - switchport mode trunk
+        - switchport nonegotiate
+        - ip arp inspection trust
+        - logging event link-status
+        - ip dhcp snooping trust
+      parents: interface {{ item.port }}
+      match: line
+    when:
+        - item.type == "trkSwPoID"
+
+  - name: configure port-channel member ports (switch to switch trunk with port-channel ports)
+    ios_config:
+      lines:
+        - description SWITCH {{ item.description }}
+        - switchport
+        - switchport mode trunk
+        - switchport nonegotiate
+        - ip arp inspection trust
+        - channel-group {{ item.poMember}} mode active
+      parents: interface {{ item.port }}
+
+    when:
+        - item.type == "trkSwPoMem"
+
+
+  - name: configure interface settings (Cat9500, switch to switch trunk port w/o port-channel ports)
+    ios_config:
+      lines:
+        - description SWITCH {{ item.description }}
+        - switchport mode trunk
+        - switchport nonegotiate
+        - logging event link-status
+        - ip arp inspection trust
+      parents: interface {{ item.port }}
+      match: line
+    when:
+        - item.type == "trkSw"
+
+  when:
+      - item.serialnum == ansible_net_serialnum
+

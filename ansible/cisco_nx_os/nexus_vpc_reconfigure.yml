@@ -1,0 +1,258 @@
+---
+# name of the section at the inventory file 
+- hosts: switches
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    tasks_folder: <INSERT_TASK_FOLDER_PATH>
+    tftp_srv: <INSERT_FTP_SERVER_IP>
+    nxos_img: "n5000-uk9.7.3.5.N1.1.bin"
+    nxos_img_md5: "2d00291a9740ea25eb9107094781f25d"
+    nxos_size: 325
+    nxos_kick: "n5000-uk9-kickstart.7.3.5.N1.1.bin"
+    nxos_kick_md5: "4e595481bc8b8dcd64e6422ae4f58bde" 
+    nxos_desired_ver: "7.3(5)N1(1)"
+#    nxos_desired_ver: "9.2(1)"
+    nxos_epld: ""
+    nxos_epld_size: 200
+    nxos_epld_md5: ""
+    switch_1: "primary-dc"
+    switch_2: "dc-secondary"
+    vpc_vrf: "vpckeepalive"
+    vpc_vrf_if: "Ethernet1/48"
+    vpc_vrf_if_ip1: "10.1.1.1/24"
+    vpc_vrf_if_ip2: "10.1.1.2/24"
+    vpc_peer_if_1: "Ethernet1/47"
+    vpc_peer_if_2: "Ethernet1/46"
+    vpc_peer_po: "46"
+    vpc_host_po_id_1: "45"
+    vpc_host_if_id_1: "Ethernet1/45"
+    vpc_host_po_id_2: "44"
+    vpc_host_if_id_2: "Ethernet1/44"
+    vpc_allowed_vlan_list: <INSERT_ALLOWED_VLANS>
+    vpc_trunk_native_vlan_id: <INSERT_VPC_TRUNK_NATVE_VLAN_ID>
+
+  tasks:
+
+    - name: Gather all (nxos) legacy facts
+      nxos_facts:
+        gather_subset: min
+      vars:
+       ansible_command_timeout: 120
+
+    - name: save running-conf to startup-conf and backup the current running-config to localhost
+      nxos_config:
+        save_when: always
+        backup: yes
+
+    - name: perform update 
+      import_tasks: "{{ tasks_folder }}/nxos_upgrade.yml"
+      when:
+        - ansible_net_version != nxos_desired_ver
+      tags:
+        - update
+
+    - name: disable features based on provided list
+      nxos_feature:
+        feature: "{{ item }}"
+        state: disabled
+      loop:
+        - fcoe
+        - npiv
+        - fport-channel-trunk
+      tags:
+        - feature
+      ignore_errors: yes
+
+    - name: enable features based on provided list
+      nxos_feature:
+        feature: "{{ item }}"
+        state: enabled
+      loop:
+        - vpc
+      tags:
+        - feature
+      
+    - name: save running-conf to startup-conf and backup the current running-config to localhost
+      nxos_config:
+        save_when: always
+        backup: yes
+
+    - name: perform 'default interface' command needed interfaces
+      nxos_config:
+        lines:
+          - default interface {{ item }}
+      loop:
+        - "{{ vpc_peer_if_1 }}"
+        - "{{ vpc_peer_if_2 }}"
+        - "{{ vpc_host_if_id_1 }}"
+        - "{{ vpc_host_if_id_2 }}"
+        - "{{ vpc_vrf_if }}"
+
+    - name: configure description and enable needed ports
+      nxos_interfaces:
+        config:
+          - name: "port-channel{{ vpc_peer_po }}"
+            description: 'port-channel for vpc peer-link'
+            enabled: True
+          - name: "{{ vpc_peer_if_1 }}"
+            description: 'vpc peer-link member'
+            enabled: True
+          - name: "{{ vpc_peer_if_2 }}"
+            description: 'vpc peer-link member'
+            enabled: True
+          - name: "port-channel{{ vpc_host_po_id_1 }}"
+            description: <INSERT_DESCRIPTION>
+            enabled: True
+          - name: "port-channel{{ vpc_host_po_id_2 }}"
+            description: <INSERT_DESCRIPTION> 
+            enabled: True
+          - name: "{{ vpc_host_if_id_1 }}"
+            description: <INSERT_DESCRIPTION>
+            enabled: True
+          - name: "{{ vpc_host_if_id_2 }}"
+            description: <INSERT_DESCRIPTION>
+            enabled: True
+          - name: "{{ vpc_vrf_if }}"
+            description: 'vpc-peer-keepalive routed port'
+            enabled: True                     
+        state: merged
+
+    - name: set vrf-peer-keepalive port to routed ports
+      nxos_config:
+        lines:
+          - no switchport
+        parents: "interface {{ item }}"
+      loop:
+        - "{{ vpc_vrf_if }}"
+
+    - name: set ip address for vrf routed port (switch 1)
+      nxos_config:
+        lines:
+          - "ip address {{ vpc_vrf_if_ip1 }}"
+        parents: "interface {{ vpc_vrf_if }}"
+      when:
+        - ansible_net_hostname is search( switch_1 )
+
+    - name: set ip address for vrf routed port (switch 2)
+      nxos_config:
+        lines:
+          - "ip address {{ vpc_vrf_if_ip2 }}"
+        parents: "interface {{ vpc_vrf_if }}"
+      when:
+        - ansible_net_hostname is search( switch_2 )
+
+    - name: Create VRF for vpc domain
+      nxos_vrf:
+        name: "{{ vpc_vrf }}"
+        description: "{{ vpc_vrf }}"
+        state: present
+
+    - name: Assign interfaces to VRF declaratively
+      nxos_vrf:
+        name: "{{ vpc_vrf }}"
+        interfaces:
+          - "{{ vpc_vrf_if }}"
+
+    - name: configure vpc domain for switch 1
+      nxos_vpc:
+        domain: "100"
+        role_priority: "1"
+        system_priority: "32667"
+        peer_gw: false
+        pkl_src: "{{ vpc_vrf_if_ip1[:8] }}"
+        pkl_dest: "{{ vpc_vrf_if_ip2[:8] }}"
+        pkl_vrf: "{{ vpc_vrf }}"
+        auto_recovery: true
+        state: present
+      when:
+        - ansible_net_hostname is search( switch_1 )
+        
+    - name: configure vpc domain switch 2
+      nxos_vpc:
+        domain: "100"
+        role_priority: "2"
+        system_priority: "32667"
+        peer_gw: false
+        pkl_src: "{{ vpc_vrf_if_ip2[:8] }}"
+        pkl_dest: "{{ vpc_vrf_if_ip1[:8] }}"
+        pkl_vrf: "{{ vpc_vrf }}"
+        auto_recovery: true
+        state: present
+      when:
+        - ansible_net_hostname is search( switch_2 )
+
+    - name: configure vpc port-channel as peer_link
+      nxos_vpc_interface:
+        portchannel: "{{ vpc_peer_po }}"
+        peer_link: yes
+        state: present
+
+
+    - name: configure vpc peer port-channel members
+      nxos_lag_interfaces:
+        config:
+          - name: "port-channel{{ vpc_peer_po }}"
+            members:
+              - member: "{{ item }}"
+        state: merged
+      loop:
+        - "{{ vpc_peer_if_1 }}"
+        - "{{ vpc_peer_if_2 }}"
+      tags:
+        - lag
+
+#---- host port section
+
+    - name: configure L2 settings for the host port-channels
+      nxos_l2_interfaces:
+        config:
+          - name: "port-channel{{ vpc_host_po_id_1 }}"
+            trunk:
+              native_vlan: {{ vpc_trunk_native_vlan_id }}
+              allowed_vlans: {{ vpc_allowed_vlan_list }}
+          - name: "port-channel{{ vpc_host_po_id_2 }}"
+            trunk:
+              native_vlan: {{ vpc_trunk_native_vlan_id }}
+              allowed_vlans: {{ vpc_allowed_vlan_list }}
+        state: replaced
+
+    - name: "bind member ports to port-channel {{ vpc_host_id_1 }}"
+      nxos_lag_interfaces:
+        config:
+          - name: "port-channel{{ vpc_host_po_id_1 }}"
+            members:
+              - member: "{{ vpc_host_if_id_1 }}"
+                mode: active
+                force: True
+        state: merged
+      
+
+    - name: "bind member ports to port-channel {{ vpc_host_id_2 }}"
+      nxos_lag_interfaces:
+        config:
+          - name: "port-channel{{ vpc_host_po_id_2 }}"
+            members:
+              - member: "{{ vpc_host_if_id_2 }}"
+                mode: active
+                force: True
+        state: merged
+
+    - name: "configure vpc port-channel binding {{ vpc_host_id_1 }}"
+      nxos_vpc_interface:
+        portchannel: "{{ vpc_host_po_id_1 }}"
+        vpc: "{{ vpc_host_po_id_1}}"
+        state: present
+
+
+    - name: "configure vpc port-channel binding {{ vpc_host_id_2 }}"
+      nxos_vpc_interface:
+        portchannel: "{{ vpc_host_po_id_2 }}"
+        vpc: "{{ vpc_host_po_id_2 }}"
+        state: present
+
+    - name: save running-config to startup-config
+      nxos_config:
+        save_when: always
+
+

@@ -1,0 +1,14 @@
+# use "export ANSIBLE_HOST_KEY_CHECKING=False" to disable host key verification
+
+[switches:vars]
+ansible_connection=network_cli
+ansible_user=<INSERT_SSH_USER>
+ansible_ssh_pass=<INSERT_SSH_PASS>
+ansible_become_method=enable
+ansible_become_password=<INSERT_ENABLE_PASS>
+ansible_network_os=nxos
+ansible_become=yes
+
+[switches]
+# example IP:
+192.168.10.122

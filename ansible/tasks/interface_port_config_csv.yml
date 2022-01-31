@@ -1,0 +1,308 @@
+---
+  - name: debug ansible_net_stacked_serialnums
+    debug: 
+      var: ansible_net_stacked_serialnums
+
+  - name: configure device tracking policy (IOS 16) 
+    ios_config:
+      lines:
+        - trusted-port
+        - device-role switch 
+      parents: device-tracking policy NoDeviceTracking
+      before: no device-tracking policy NoDeviceTracking
+      match: line
+    when: 
+      - ansible_net_version is match('^16.*')
+      - filename | length < 0
+
+  - name: remove device tracking policy (IOS 15) 
+    ios_config:
+      lines:
+        - no ip device tracking
+        - no ip device tracking probe delay 10
+        - no ip device tracking probe use-svi
+        - no ip device tracking probe auto-source override
+      match: line
+    when: 
+      - ansible_net_version is match('^15.*')
+      - filename | length < 0
+
+  - name: configure switch interfaces based on the CSV
+    block:
+    - name: configure SVIs 
+      ios_config:
+        lines:
+          - ip address {{ ifList.svi_ip }}
+          - description {{ ifList.description}}
+          - no ip route-cache
+          - no shutdown
+        parents: interface vlan {{ ifList.port }}
+        match: line
+      when:
+        - ifList.type == "svi"
+      
+  # Trunk Port Config Area:
+    - name: configure interface settings (WLAN AP ports, trunk port for FlexConnect)
+      ios_config:
+        lines:
+          - description AP TRUNK {{ ifList.description }}
+          - switchport mode trunk
+          - switchport trunk native vlan {{ ifList.trunkNative }}
+          - switchport nonegotiate
+          - logging event link-status
+          - spanning-tree portfast trunk
+          - spanning-tree bpduguard enable
+          - storm-control broadcast level pps 1k
+          - storm-control multicast level pps 5k
+          - storm-control action shutdown
+          - storm-control action trap
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+        - ifList.type == "trkAP"
+
+    - name: configure WAN uplink 1 (switch to router trunk port w/o port-channel )
+      ios_config:
+        lines:
+          - description WAN uplink 1 
+          - switchport mode trunk
+          - switchport nonegotiate
+          - logging event link-status
+          - spanning-tree portfast trunk
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "trkWanOne"
+
+    - name: configure WAN 2 (switch to router trunk port w/o port-channel )
+      ios_config:
+        lines:
+          - description WAN uplink 2
+          - switchport mode trunk
+          - switchport nonegotiate
+          - logging event link-status
+          - spanning-tree portfast trunk
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "trkWanTwo"
+
+    - name: configure interface settings (IOS16, switch to switch trunk port w/o port-channel ports)
+      ios_config:
+        lines:
+          - description SWITCH {{ ifList.description }}
+          - switchport mode trunk
+          - switchport trunk native vlan {{ ifList.trunkNative }}
+          - switchport trunk allowed vlan {{ ifList.trunkList }}
+          - switchport nonegotiate
+          - logging event link-status
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+          - device-tracking attach-policy NoDeviceTracking 
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "trkSw"
+          - ansible_net_version is match('^16.*')
+
+    - name: configure interface settings (IOS15, switch to switch trunk port w/o port-channel ports)
+      ios_config:
+        lines:
+          - description SWITCH {{ ifList.description }}
+          - switchport mode trunk
+          - switchport trunk native vlan {{ ifList.trunkNative }}
+          - switchport trunk allowed vlan {{ ifList.trunkList }}
+          - switchport nonegotiate
+          - logging event link-status
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+          - ip device tracking maximum 0
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "trkSw"
+          - ansible_net_version is match('^15.*')
+
+    - name: configure port-channel ID  (IOS16, switch to switch trunk port with port-channel ports)
+      ios_config:
+        lines:
+          - description SWITCH {{ ifList.description }}
+          - switchport mode trunk
+          - switchport nonegotiate
+          - logging event link-status
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+          - device-tracking attach-policy NoDeviceTracking 
+        parents: interface port-channel{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "trkSwPoID"
+          - ansible_net_version is match('^16.*')
+
+
+    - name: configure port-channel ID  (IOS15, switch to switch trunk port with port-channel ports)
+      ios_config:
+        lines:
+          - description SWITCH {{ ifList.description }}
+          - switchport mode trunk
+          - switchport nonegotiate
+          - logging event link-status
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+          - ip device tracking maximum 0
+        parents: interface port-channel{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "trkSwPoID"
+          - ansible_net_version is match('^15.*')
+
+    - name: configure port-channel member ports (switch to switch trunk with port-channel ports)
+      ios_config:
+        lines:
+          - description SWITCH {{ ifList.description }}
+          - switchport mode trunk
+          - switchport trunk native vlan {{ ifList.trunkNative }}
+          - switchport trunk allowed vlan {{ ifList.trunkList }}
+          - switchport nonegotiate
+          - logging event link-status
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+          - no switchport access vlan
+          - no switchport voice vlan
+          - no spanning-tree portfast 
+          - no spanning-tree portfast trunk
+          - no spanning-tree bpduguard enable
+          - no spanning-tree bpdufilter enable
+          - no spanning-tree guard loop
+          - no spanning-tree guard root
+          - default spanning-tree link-type
+          - default storm-control broadcast level
+          - default storm-control multicast level
+          - no storm-control action trap
+          - no storm-control action shutdown 
+          - no udld port
+          - channel-group {{ ifList.poMember}} mode active
+        parents: interface {{ ifList.port }}
+        match: exact
+      when:
+          - ifList.type == "trkSwPoMem"
+
+#    Access Port Config Area:
+
+    - name: configure interface (range) settings (client access ports with voice)
+      ios_config:
+        lines:
+          - description ACC {{ ifList.description }}
+          - switchport mode access
+          - switchport access vlan {{ ifList.vlan }}
+          - switchport voice vlan {{ ifList.voice }}
+          - logging event link-status
+          - spanning-tree portfast
+          - spanning-tree bpduguard enable
+          - storm-control broadcast level pps 1k
+          - storm-control multicast level pps 5k
+          - storm-control action shutdown
+          - storm-control action trap
+        parents: interface range GigabitEthernet{{ ifList.port }}
+        match: line
+      tags: access-cl
+      when:
+          - ifList.type == "accRangeVoice"
+
+    - name: perform 'default interface' for other ports than client interfaces
+      nxos_config:
+        lines:
+          - default interface range gigabitEthernet {{ ifList.port }}
+      when:
+          - ifList.type == "accRangeWLAN"
+
+
+    - name: configure interface settings (IOS16, WLAN AP ports, access port for local mode)
+      ios_config:
+        lines:
+          - description AP {{ ifList.description }}
+          - switchport mode access
+          - switchport access vlan {{ ifList.vlan }}
+          - logging event link-status
+          - spanning-tree portfast 
+          - spanning-tree bpduguard enable
+          - storm-control broadcast level pps 1k
+          - storm-control multicast level pps 5k
+          - storm-control action shutdown
+          - storm-control action trap
+          - device-tracking attach-policy NoDeviceTracking
+        parents: interface range GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "accRangeWLAN"
+          - ansible_net_version is match('^16.*')
+
+    - name: configure interface settings (IOS15, WLAN AP ports, access port for local mode)
+      ios_config:
+        lines:
+          - description AP {{ ifList.description }}
+          - switchport mode access
+          - switchport access vlan {{ ifList.vlan }}
+          - logging event link-status
+          - spanning-tree portfast 
+          - spanning-tree bpduguard enable
+          - storm-control broadcast level pps 1k
+          - storm-control multicast level pps 5k
+          - storm-control action shutdown
+          - storm-control action trap
+          - ip device tracking maximum 0
+        parents: interface range GigabitEthernet{{ ifList.port }}
+        match: line
+      when:
+          - ifList.type == "accRangeWLAN"
+          - ansible_net_version is match('^15.*')
+
+    - name: configure interface settings (client access ports w/o voice)
+      ios_config:
+        lines:
+          - description ACC {{ ifList.description }}
+          - switchport mode access
+          - switchport access vlan {{ ifList.vlan }}
+          - logging event link-status
+          - spanning-tree portfast
+          - spanning-tree bpduguard enable
+          - storm-control broadcast level pps 1k
+          - storm-control multicast level pps 5k
+          - storm-control action shutdown
+          - storm-control action trap
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      tags: access-cl
+      when:
+          - ifList.type == "accStd"
+
+    - name: configure interface settings (server access ports)
+      ios_config:
+        lines:
+          - description SRV {{ ifList.description }}
+          - switchport mode access
+          - switchport access vlan {{ ifList.vlan }}
+          - logging event link-status
+          - spanning-tree portfast
+          - spanning-tree bpduguard enable
+          - storm-control broadcast level pps 1k
+          - storm-control multicast level pps 5k
+          - storm-control action shutdown
+          - storm-control action trap
+          - ip dhcp snooping trust
+          - ip arp inspection trust
+        parents: interface GigabitEthernet{{ ifList.port }}
+        match: line
+      tags: access-cl
+      when:
+          - ifList.type == "accSrv"
+
+    when:
+      - ansible_net_stacked_serialnums is search( ifList.serialnum )
+
+
+

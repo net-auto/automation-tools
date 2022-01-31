@@ -1,0 +1,68 @@
+---
+# global section tasks
+
+
+# section for IOS upgrade (ios 1)
+- name: UPGRADE IOS (Cat3k) IMAGE IF NOT COMPLIANT
+  block:
+
+  - name: EXECUTE 'dir flash:' FOR IMAGE EXSISTENCE 
+    ios_command:
+      commands: 
+        - command: "dir flash:"
+    register: dir_flash
+
+  - name: COPY OVER IOS IMAGE VIA TFTP
+    ios_command:
+      commands: 
+        - "copy tftp://{{ tftp_srv }}/{{ ios_img1 }} flash:{{ ios_img1 }}"
+    when: 
+      - ansible_net_memfree_mb > ios_img1_size
+      - dir_flash.stdout_lines is not search( ios_img1 )
+    
+  - name: DELETE CURRENT IOS IMAGE, IF THERE IS NOT ENOUGH SPACE
+    ios_command:
+      commands: 
+        - command: "delete /force {{ ansible_net_image }}"
+# "ansible_net_image": "flash:c3560cx-universalk9-mz.152-7.E.bin"
+    when: ansible_net_memfree_mb < ios_img1_size
+
+  - name: CHECK MD5 HASH FOR COPIED IOS IMAGE
+    ios_command:
+      commands: 
+        - verify /md5 {{ ansible_net_image }}
+    register: md5_result
+    vars:
+       ansible_command_timeout: 300
+
+  - name: INSTALL NEW IOS (set boot variable)
+    ios_config:
+       lines:
+         - no boot system
+         - boot system flash:{{ ios_img1 }}
+       match: none
+       save_when: always
+    when:
+      - md5_result.stdout_lines is search( ios_md5_1 )
+      
+
+  - name: REBOOT SWITCH
+    ios_command:
+        commands:
+            - "reload\n"
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{inventory_hostname}}"
+      port: 22
+      delay: 60
+    delegate_to: localhost
+
+  - name: ASSERT THAT THE IOS VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver1 == ansible_net_version
+        
+  when: 
+    - ansible_net_version != ios_ver1
+    

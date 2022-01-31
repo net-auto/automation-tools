@@ -1,0 +1,55 @@
+---
+# name of the section at the inventory file (nxos)
+- hosts: nxos
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars_prompt:
+#      - name: hostname_sw
+#        prompt: "please input the hostname for the switch"
+#        private: no 
+#        
+#      - name: serial_sn
+#        prompt: "please input the switch serial number (all UPPERCASE)"
+#        private: no      
+
+
+  vars:
+      - file1: ""
+      - file2: ""
+      - file3: ""
+      - file4: ""
+      - host1: "<INSERT_HOSTNAME>"
+      - host2: "<INSERT_HOSTNAME>"
+      - host3: "<INSERT_HOSTNAME>"      
+      - host4: "<INSERT_HOSTNAME>"
+
+  tasks:
+
+  - name: gather nxos facts
+    nxos_facts:
+
+  - name: configure interfaces bases on provided files
+    nxos_config:
+      src: "./configs/{{ file1 }}"
+    when:
+      - ansible_net_hostname == host1
+
+  - name: configure interfaces bases on provided files
+    nxos_config:
+      src: "./configs/{{ file2 }}"
+    when:
+      - ansible_net_hostname == host2
+
+  - name: configure interfaces bases on provided files
+    nxos_config:
+      src: "./configs/{{ file3 }}"
+    when:
+      - ansible_net_hostname == host3
+
+  - name: configure interfaces bases on provided files
+    nxos_config:
+      src: "./configs/{{ file4 }}"
+    when:
+      - ansible_net_hostname == host4
+

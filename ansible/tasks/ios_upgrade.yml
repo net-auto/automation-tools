@@ -1,0 +1,312 @@
+---
+# global section tasks
+
+# section for IOS upgrade (ios 1)
+- name: UPGRADE IOS (Cat3k) IMAGE IF NOT COMPLIANT
+  block:
+
+  - name: EXECUTE 'dir flash:' FOR IMAGE EXSISTENCE 
+    ios_command:
+      commands: 
+        - command: "dir flash:"
+    register: dir_flash
+
+  - name: COPY OVER IOS IMAGE VIA TFTP
+    ios_command:
+      commands: 
+        - "copy tftp://{{ tftp_srv }}/{{ ios_img1 }} flash:{{ ios_img1 }}"
+    when: 
+      - ansible_net_memfree_mb > ios_img1_size
+      - dir_flash.stdout_lines is not search( ios_img1 )
+    
+  - name: DELETE CURRENT IOS IMAGE, IF THERE IS NOT ENOUGH SPACE
+    ios_command:
+      commands: 
+        - command: "delete /force {{ ansible_net_image }}"
+# "ansible_net_image": "flash:c3560cx-universalk9-mz.152-7.E.bin"
+    when: ansible_net_memfree_mb < ios_img1_size
+
+  - name: CHECK MD5 HASH FOR COPIED IOS IMAGE
+    ios_command:
+      commands: 
+        - verify /md5 {{ ansible_net_image }}
+    register: md5_result
+    vars:
+       ansible_command_timeout: 300
+
+  - name: INSTALL NEW IOS (set boot variable)
+    ios_config:
+       lines:
+         - no boot system
+         - boot system flash:{{ ios_img1 }}
+       match: none
+       save_when: always
+    when:
+      - md5_result.stdout_lines is search( ios_md5_1 )
+      
+  - name: REBOOT SWITCH
+    ios_command:
+        commands:
+            - "reload\n"
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{inventory_hostname}}"
+      port: 22
+      delay: 60
+    delegate_to: localhost
+
+  - name: ASSERT THAT THE IOS VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver1 == ansible_net_version
+        
+  when: 
+    - ansible_net_version != ios_ver1
+    - ansible_net_model is search("3560")
+
+#---------------------------------------------------------------------------------
+
+# section for IOS-XE upgrade (ios 2)
+- name: (Cat9300) UPGRADE IOS-XE IMAGE IF NOT COMPLIANT
+  block:
+
+  - name: perform cleanup before copying the new (16.06.01 and earlier)
+    ios_command:
+      commands: 
+        - command: "request platform software package clean switch all file flash:"
+          prompt: "[y/n]"
+          answer: "y"
+    when: ansible_net_version is version('16.06.01', '<=')
+
+  - name: perform cleanup before copying the new (16.06.02 and later)
+    ios_command:
+      commands: 
+        - command: "install remove inactive"
+          prompt: "[y/n]"
+          answer: "y"
+    when: ansible_net_version is version('16.06.02', '>=')
+
+  - name: COPY OVER IOS-XE IMAGE VIA TFTP
+    ios_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ ios_img2 }} flash:{{ ios_img2 }} vrf Mgmt-vrf"
+          prompt: "{{ ios_img2 }}"
+          answer: "\n"
+    when: 
+      - ansible_net_memfree_mb > ios_img2_size
+#      - 'ios_img2 not in dir_flash'
+#      - dir_flash.stdout is search("{{ ios_img2_size }}")
+
+
+  - name: set boot variable (install mode)
+    ios_command:
+      commands: 
+        - command: "boot system flash:packages.conf"
+    when: 
+      - ansible_net_image not in match('flash:packages.conf')
+
+  - name: INSTALL NEW IOS-XE (request platform, INSTALL mode, 16.06.01 and earlier)
+    ios_command:
+       commands:
+        - command: "request platform software package install switch all file flash:{{ ios_img2 }} auto-copy"
+    when: ansible_net_version is version('16.06.01', '<=')
+    vars:
+       ansible_command_timeout: 300
+
+  - name: REBOOT SWITCH
+    ios_command:
+        commands:
+            - "reload\n"
+    when: ansible_net_version is version('16.06.01', '<=')
+
+  - name: INSTALL NEW IOS-XE (request platform, INSTALL mode, 16.06.02 and later)
+    cli_command:
+      command: "install add file flash:{{ ios_img2 }} activate commit prompt-level none"
+      check_all: True
+      prompt: 
+        - "[y/n/q]"
+        - "[y/n]"
+      answer: 
+        - "y"
+        - "y"
+    when: ansible_net_version is version('16.06.02', '>=')
+    vars:
+       ansible_command_timeout: 300
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{ inventory_hostname }}"
+      port: 22
+      delay: 60
+    delegate_to: localhost
+
+  - name: ASSERT THAT THE IOS VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver2 == ansible_net_version
+  
+  when: 
+    - ansible_net_version != ios_ver2
+    - ansible_net_stacked_models | join(',') is match('.*9300.*')
+#      ansible_net_stacked_models | join(',') is match('.*9200.*')
+      
+# section for IOS-XE upgrade Cat9200(L) platform (ios 3)
+
+- name: (Cat9200) UPGRADE IOS-XE LITE IMAGE IF NOT COMPLIANT
+  block:
+  - name: REQUEST SOFTWARE CLEAN, IF THERE IS NOT ENOUGH SPACE
+    ios_command:
+      commands: 
+        - command: "install remove inactive"
+    when: ansible_net_memfree_mb < ios_img3_size
+
+  - name: COPY OVER IOS-XE LITE IMAGE VIA TFTP
+    ios_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ ios_img3 }} flash:{{ ios_img3 }} vrf Mgmt-vrf"
+          prompt: "{{ ios_img3 }}"
+          answer: "\n"
+    when: 
+      - ansible_net_memfree_mb > ios_img2_size
+
+  - name: INSTALL NEW IOS-XE LITE IMAGE (request platform, INSTALL mode)
+    ios_command:
+       commands:
+          - command: "install add file flash:{{ ios_img3 }} activate commit prompt-level none"
+    vars:
+       ansible_command_timeout: 300
+
+# reboot will be performed after install add
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{ inventory_hostname }}"
+      port: 22
+      delay: 60
+    delegate_to: localhost
+
+  - name: ASSERT THAT THE IOS-XE LITE VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver3 == ansible_net_version
+  
+  when: 
+    - ansible_net_version != ios_ver3
+    - ansible_net_stacked_models | join(',') is match('.*9200.*')
+
+
+- name: (Cat9500) UPGRADE IOS-XE IMAGE IF NOT COMPLIANT
+  block:
+
+  - name: perform dir flash and store to variable -> dir_flash
+    ios_command:
+      commands: 
+        - command: "dir flash:"
+    register: dir_flash
+
+  - name: set_fact true/false for dir flash command
+    set_fact:
+        dir_flash_out: "{{ true if (dir_flash.stdout[0] | regex_search(ios_img4)) else false }}" 
+        cacheable: no 
+      
+  - name: debug dir_img_NEW
+    debug:
+      var: dir_flash_out 
+
+  - name: COPY OVER IOS XE IMAGE VIA TFTP
+    ios_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ ios_img4 }} flash:{{ ios_img4 }} vrf Mgmt-vrf"
+          prompt: "{{ ios_img4 }}"
+          answer: "\n"
+    when: 
+      - ansible_net_memfree_mb > ios_img4_size
+      - not dir_flash_out
+    vars:
+       ansible_command_timeout: 1200    
+
+  - name: set boot variable (install mode) when not already set
+    ios_config:
+       lines:
+          - boot system bootflash:packages.conf
+    when: 
+      - ansible_net_image != "bootflash:packages.conf"
+
+  - name: CHECK MD5 HASH FOR IOS-XE
+    ios_command:
+      commands: 
+        - verify /md5 flash:{{ ios_img4 }}
+    register: md5_result
+    vars:
+       ansible_command_timeout: 300
+  
+  - name: set_fact for md5 check
+    set_fact:
+        md5_result_out: "{{ true if (md5_result.stdout[0] | regex_search(ios_md5_4)) else false }}" 
+        cacheable: no 
+
+  - name: debug md5_result_out
+    debug:
+      var: md5_result_out
+
+  - name: INSTALL NEW IOS-XE (request platform, INSTALL mode, 16.06.01 and earlier)
+    ios_command:
+       commands:
+        - command: "request platform software package install switch all file flash:{{ ios_img4 }} auto-copy"
+    when: 
+      - ansible_net_version is version('16.06.01', '<=')
+      - md5_result_out
+    vars:
+       ansible_command_timeout: 300
+
+  - name: REBOOT SWITCH
+    ios_command:
+        commands:
+            - "reload\n"
+    when: ansible_net_version is version('16.06.01', '<=')
+
+  - name: execute write memory for install add procedure
+    ios_command:
+        commands:
+            - "write memory"
+
+  - name: INSTALL NEW IOS-XE (install add file, INSTALL mode, 16.06.02 and later)
+    ios_command:
+      commands: 
+        - command: "install add file flash:{{ ios_img4 }} activate commit prompt-level none"
+ #         prompt: "[y/n]"
+ #         answer: "y"
+    when: 
+      - ansible_net_version is version('16.06.02', '>=')
+      - md5_result_out
+    vars:
+       ansible_command_timeout: 600
+
+
+  - name: WAIT FOR SWTICH TO RETURN
+    wait_for:
+      host: "{{ inventory_hostname }}"
+      port: 22
+      delay: 60
+    delegate_to: localhost
+
+  - name: perform cleanup (16.06.01 and earlier)
+    ios_command:
+      commands: 
+        - command: "request platform software package clean switch all file flash:"
+          prompt: "[y/n]"
+          answer: "y"
+    when: ansible_net_version is version('16.06.01', '<=')
+    vars:
+       ansible_command_timeout: 300
+
+  - name: ASSERT THAT THE IOS VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver4 == ansible_net_version
+  
+  when: 
+    - ansible_net_version != ios_ver4
+    - ansible_net_stacked_models | join(',') is match('.*9500.*')
+

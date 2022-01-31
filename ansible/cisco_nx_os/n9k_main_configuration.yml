@@ -1,0 +1,155 @@
+---
+# name of the section at the inventory file (all)
+- hosts: nxos
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    - baseline_filename: <INSERT_BASELINE_FILENAME>
+    - baseline_interface_filename: <INSERT_BASELINE_INTERFACE_FILENAME>
+    - vlan_import_filename: <INSERT_VLAN_IMPORT_FILENAME>
+    - base_csv_path: <INSERT_CSV_BASE_PATH>
+    - tasks_folder: <INSERT_TASK_FOLDER_PATH>
+
+  vars_prompt:
+#      - name: hostname_sw
+#        prompt: "please input the hostname for the switch"
+#        private: no 
+#        
+#      - name: serial_sn
+#        prompt: "please input the switch serial number (all UPPERCASE)"
+#        private: no      
+
+      - name: filename
+        prompt: "please input the csv filename for the baseline (e.g.: switch_baseline_config_import.csv)"
+        private: no 
+        default: ""
+
+      - name: filename_if
+        prompt: "please input the csv filename for the interfaces (e.g.: interface_mapping_import.csv)"
+        private: no
+        default: ""
+
+      - name: filename_vlan_list
+        prompt: "please input the csv filename for the vlan list (e.g.: vlan_list_import.csv -> if empty, no VLANs will be configured)"
+        private: no
+        default: "" 
+#  vars:
+#      - nxos_feature_enable: "{{ query('file', 'configs/nxos_feature_enable.cfg').splitlines() }}"
+#      - nxos_feature_disable: "{{ query('file', 'configs/nxos_feature_disable.cfg').splitlines() }}" 
+
+  tasks:
+
+# switch-basline csv import -> Ansible version: 2.8 needed! 
+  - name: Read parameters from CSV file for baseline config
+    read_csv:
+      path: "{{ base_csv_path }}/{{ baseline_filename }}"
+      delimiter: ';'
+      dialect: "excel"
+    register: sw_base_cfg
+    delegate_to: localhost
+    when: 
+      - baseline_filename | length > 0
+    tags: 
+    - csv
+    - prio
+    - feature
+    - vpc
+
+# switch interface config csv import -> Ansible version: 2.8 needed! 
+  - name: Read parameters from CSV file for interface config
+    read_csv:
+      path: "{{ base_csv_path }}/{{ baseline_interface_filename }}"
+      delimiter: ';'
+      dialect: "excel"
+    register: access_port_cfg
+    delegate_to: localhost
+    when: 
+      - baseline_interface_filename | length > 0
+    tags:
+      - interfaces
+
+  #switch vlan import csv import -> Ansible version: 2.8 needed! 
+  - name: Read VLAN parameters from CSV file and return a list
+    read_csv:
+      path: "{{ base_csv_path }}/{{ vlan_import_filename }}"
+      delimiter: ';'
+      dialect: "excel"
+    register: vlan_list_csv
+    delegate_to: localhost
+    tags:
+      - vlan
+
+  - name: gather switch facts
+    nxos_facts:
+    tags: 
+      - update
+      - feature
+      - interfaces
+      - vpc
+
+  - name: debug ansible_net_version
+    debug:
+        var: ansible_net_version # not required. A variable name to debug.  Mutually exclusive with the 'msg' option.
+        verbosity: 0 # not required. A number that controls when the debug is run, if you set to 3 it will only run debug when -vvv or above
+
+
+  - name: execute the NXOS version check and if needed, perform update/upgrade
+    import_tasks: "{{ tasks_folder }}/nxos_upgrade.yml"
+    when: 
+      - ansible_net_version != nxos_ver
+    tags: update
+
+  - name: debug filename var
+    debug:
+      var: sw_base_cfg.list
+
+
+  - name: (n9k) execute baseline configuration tasks 
+    include_tasks: "{{ tasks_folder }}/n9k_switch_baseline.yml"
+    loop: "{{ sw_base_cfg.list }}"
+    loop_control:
+      index_var: index
+      loop_var: item2
+    when: 
+        - filename | length > 0
+        - item2.serial_number | length > 0
+    # execute only if vars are provided
+    tags:
+      - feature
+      - vpc
+
+#----------------------------
+
+  - name: create VLANs based on provided list
+    nxos_vlans:
+      config:
+        - vlan_id: "{{ vlanList.vlan | trim }}"
+          name: "{{ vlanList.name | trim }}"
+      state: merged
+    loop: "{{ vlan_list_csv.list }}"
+    loop_control:
+      index_var: index
+      loop_var: vlanList
+    when:
+      - filename_vlan_list | length > 0
+      - vlanList.vlan | trim | length > 0
+    tags:
+      - vlan
+
+  - name: configure interfaces based on provided csv
+    include_tasks: 
+      file:  "{{ tasks_folder }}/interface_port_config_csv.yml"
+      apply:
+        tags:
+          - interfaces
+    loop: "{{ access_port_cfg.list }}"
+    loop_control:
+      index_var: index
+    when: 
+        - filename_if | length > 0
+#
+    # execute only if vars are provided
+    tags:
+      - interfaces
+
+

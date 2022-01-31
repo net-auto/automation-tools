@@ -1,0 +1,300 @@
+---
+  - name: configure nxos switch based on the csv file
+    block:
+    - name: configure hostname and domain name
+      nxos_system:
+        hostname: "{{ item2.switch_name }}"
+        domain_name: <INSERT_DOMAIN_FQDN>
+
+    - name: configure name servers
+      nxos_system:
+        name_servers:
+          - <INSERT_NAMESERVER_FQDN>
+          - <INSERT_NAMESERVER_FQDN>
+  # ----------------------------
+    - name: configure cli aliases 
+      nxos_config:
+        lines:
+          - cli alias name sr sho run
+          - cli alias name c conf t
+          - cli alias name wr copy running startup
+          - cli alias name st sho start
+          - cli alias name wrt sh run
+
+    - name: install and configure feature-set fex
+      nxos_config:
+        lines:
+          - install feature-set fex
+          - feature-set fex
+#      when:
+#        - item2.fex_support == "y"
+      tags:
+        - feature
+      vars:
+        tacacs_1_server_ip: <INSERT_TACACS_SERVER_1_IP>
+        tacacs_1_key: <INSERT_TACACS_SERVER_1_KEY>
+        tacacs_1_domain: <INSERT_TACACS_SERVER_1_DOMAIN>
+        tacacs_2_server_ip: <INSERT_TACACS_SERVER_2_IP>
+        tacacs_2_key: <INSERT_TACACS_SERVER_2_KEY>
+        tacacs_2_domain: <INSERT_TACACS_SERVER_2_DOMAIN>
+  # ----------------------------
+
+    - name: enable features bases on nexus_feature_enable.cfg
+      nxos_feature:
+        feature: "{{ item }}"
+        state: enabled
+      loop:
+        - tacacs+
+        - udld
+        - interface-vlan
+        - lacp
+        - vpc
+        - lldp
+      tags:
+        - feature
+
+    - name: disable features bases on nexus_feature_disable.cfg
+      nxos_feature:
+        feature: "{{ item }}"
+        state: disabled
+      loop:
+        - telnet
+        - eigrp
+        - hsrp
+        - vtp
+      tags:
+        - feature
+
+  # ----------------------------
+    - name: install and configure feature-set fex
+      nxos_config:
+        lines:
+          - install feature-set fex
+          - feature-set fex
+#      when:
+#        - item2.fex_support == "y"
+  # ----------------------------
+    - name: configure global configuration
+      nxos_config:
+        src: "./configs/n9k_global_config.cfg"
+
+  # ----------------------------
+
+    - name: configure user accounts
+      nxos_config:
+        src: "./configs/n9k_username.cfg"
+
+ # ----------------------------
+
+    - name: configure snmp user
+      nxos_config:
+        src: "./configs/n9k_snmp.cfg"
+
+ # ----------------------------
+
+    - name: configure aaa radius tacacs
+      nxos_config:
+        src: "./configs/n9k_aaa_tacacs_radius.cfg"
+
+ # ----------------------------
+
+    - name: Configure banner from file
+      nxos_banner:
+        banner:  motd
+        text: "{{ lookup('file', './configs/n9k_motd.cfg') }}"
+        state: present
+
+  # ----------------------------
+
+    - name: configure vpc domain
+      nxos_vpc:
+        domain: "{{ item2.vpc_domain }}"
+        role_priority: "{{ item2.role_priority }}"
+        system_priority: "32667"
+        peer_gw: false
+        pkl_src: "{{ item2.pkl_src }}"
+        pkl_dest: "{{ item2.pkl_dest }}"
+        pkl_vrf: management
+        auto_recovery: true
+        state: present
+
+  # ----------------------------
+
+    - name: set aaa group server tacacs+ ISE-TACACS
+      nxos_config:
+        lines:
+          - server {{ tacacs_1_server_ip }}
+          - server {{ tacacs_2_server_ip }}
+          - use-vrf default
+        parents: aaa group server tacacs+ ISE-TACACS
+
+  # ----------------------------
+    - name: create/map management VLAN, when not VID 1
+      nxos_vlans:
+        config:
+          - vlan_id: "{{ item2.mgmt_vid }}"
+            name: MGMT
+            enabled: true
+        state: merged
+      when:
+        - item2.mgmt_vid != "1"
+        - item2.mgmt_vid | length > 0  
+
+    - name: configure mgmt VLAN IP interface
+      nxos_config:
+        lines:
+          - ip address {{ item2.mgmt_ip }}
+          - no shutdown
+        parents: interface vlan {{ item2.mgmt_vid }}
+        match: line
+
+    - name: configure default route for default vrf
+      nxos_static_route:
+          prefix: "0.0.0.0/0" 
+          next_hop: "{{ item2.def_gw_global }}"
+          route_name: mgmt-default
+      when:
+        - item2.switch_type == "l2"
+
+  # ----------------------------
+
+    - name: reset/default vpc peer-link port-channel member 
+      nxos_config:
+        lines:
+          - default interface Ethernet{{ item2.vpc_mem1 }}
+          - default interface Ethernet{{ item2.vpc_mem2 }}
+      tags:
+        - vpc
+
+    - name: configure port-channel for vpc peer link 
+      nxos_config:
+        lines:
+          - switchport mode trunk
+          - description VPC-Peer-Link
+          - spanning-tree port type network
+          - vpc peer-link
+        parents: interface port-channel{{ item2.vpc_po }}        
+      when:        
+        - item2.mgmt_vrf_gw | length > 0
+        - item2.mgmt_vrf | length > 0  
+      tags:
+        - vpc
+
+    - name: configure port-channel 1 member 1
+      nxos_config:
+        lines:
+          - switchport
+          - switchport mode trunk
+          - description VPC-Peer-Link-Member-1
+          - channel-group {{ item2.vpc_po }} mode active
+          - no shutdown
+        parents: interface Ethernet{{ item2.vpc_mem1 }}
+#      when:        
+#        - item2.mgmt_vrf_gw | length > 0
+#        - item2.mgmt_vrf | length > 0  
+      tags:
+        - vpc
+
+    - name: configure port-channel 1 member 2
+      nxos_config:
+        lines:
+          - switchport
+          - switchport mode trunk
+          - description VPC-Peer-Link-Member-2
+          - channel-group {{ item2.vpc_po }} mode active
+          - no shutdown
+        parents: interface Ethernet{{ item2.vpc_mem2 }}
+#      when:        
+#        - item2.mgmt_vrf_gw | length > 0
+#        - item2.mgmt_vrf | length > 0  
+      tags:
+        - vpc
+
+    - name: configure spanning-tree options and priority (4096) for root bridge
+      nxos_config:
+        lines:
+          - spanning-tree mode rapid-pvst
+          - spanning-tree vlan 1-4094 priority 4096
+          - spanning-tree loopguard default
+          - spanning-tree port type edge bpduguard default
+          - spanning-tree pathcost method long
+      when:
+        - item2.stp_role == "r"
+
+    - name: configure spanning-tree options and priority (32768) for non-root bridges
+      nxos_config:
+        lines:
+          - spanning-tree mode rapid-pvst
+          - spanning-tree vlan 1-4094 priority 32768
+          - spanning-tree loopguard default
+          - spanning-tree port type edge bpduguard default
+          - spanning-tree pathcost method long
+      when:
+        - item2.stp_role == "o"
+
+# ----------------------------
+    - name: execute show inventory and write out to file
+      nxos_command:
+        commands:
+          - show inventory
+      register: show_inventory_out
+
+    - copy: content="{{ show_inventory_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_inventory.txt"
+
+    - name: execute show version and write out to file
+      nxos_command:
+        commands:
+          - show version
+      register: show_version_out
+
+    - copy: content="{{ show_version_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_version.txt"
+
+    - name: execute show snmp user and write out to file
+      nxos_command:
+        commands:
+          - show snmp user
+      register: show_snmp_user_out
+
+    - copy: content="{{ show_snmp_user_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_snmp_user.txt"
+
+    - name: execute show interface status and write out to file
+      nxos_command:
+        commands:
+          - show interface status
+      register: show_interface_status_out
+
+    - copy: content="{{ show_interface_status_out.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_interface_status.txt"
+
+    - name: save running to startup and backup config to localhost
+      nxos_config:
+        save_when: always
+        backup: yes
+        backup_options:
+          filename: "{{ item2.switch_name }}-{{ ansible_net_serialnum }}-running.cfg"
+          dir_path: "{{ backup_dir }}"
+      tags: backup
+
+    - name: execute show ip ssh to verify successful SSH configuration
+      nxos_command:
+        commands:
+          - show ssh server
+      register: show_ssh_server
+
+    - copy: content="{{ show_ssh_server.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_ssh_server.txt"
+
+    - name: execute show etherchannel summary to verify successful port-channel config
+      nxos_command:
+        commands:
+          - show port-channel summary
+      register: show_portch_sum
+
+    - copy: content="{{ show_portch_sum.stdout_lines | to_nice_yaml }}" dest="{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}_show_portch_sum.txt"
+
+    - name: compare saved config with running config
+      nxos_config:
+        diff_against: intended
+        intended_config: "{{ lookup('file', '{{ backup_dir }}{{ item2.switch_name }}-{{ ansible_net_serialnum }}-running.cfg') }}"
+
+    when:
+      - item2.serial_number == ansible_net_serialnum
+      

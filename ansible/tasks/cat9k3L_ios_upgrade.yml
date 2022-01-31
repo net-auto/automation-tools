@@ -1,0 +1,91 @@
+---
+# global section tasks
+
+
+- name: EXECUTE 'dir flash:' FOR IMAGE CHECKING
+  ios_command:
+    commands: 
+      - command: "dir flash:"
+  register: dir_flash
+
+# section for IOS-XE (Cat9k3)upgrade
+- name: (Cat9300L) UPGRADE IOS-XE IMAGE IF NOT COMPLIANT
+  block:
+
+
+  - name: perform cleanup if not enough space (16.06.02 and later)
+    ios_command:
+      commands: 
+        - command: "install remove inactive"
+          prompt: "[y/n]"
+          answer: "y"
+    when: 
+      - ansible_net_version is version('16.06.02', '>=')
+      - ansible_net_memfree_mb < ios_size_9300L
+
+  - name: COPY IMAGE IF NOT EXSISTS VIA TFTP
+    ios_command:
+      commands: 
+        - command: "copy tftp://{{ tftp_srv }}/{{ ios_img_9300L }} flash:{{ ios_img_9300L }} vrf Mgmt-vrf"
+          prompt: "{{ ios_img_9300L }}"
+          answer: "\n"
+    when: 
+      - ansible_net_memfree_mb > ios_img_9300L_size
+      - dir_flash.stdout_lines is not search( ios_img_9300L )
+    vars:
+      ansible_command_timeout: 600
+
+  - name: CHECK MD5 HASH FOR NEW IMAGE
+    ios_command:
+      commands: 
+        - verify /md5 flash:{{ ios_img_9300L }}
+    register: md5_result
+    vars:
+       ansible_command_timeout: 300
+
+  - name: DEBUG md5_result
+    debug:
+      var: md5_result
+
+  - name: DEBUG ansible_net_version
+    debug:
+      var: ansible_net_version
+
+  - name: save running-conf to startup-conf (needed for non-interactive install)
+    ios_config:
+      save_when: always
+
+  - name: INSTALL NEW IOS-XE (request platform, INSTALL mode, 16.06.02 and later)
+    cli_command:
+      command: "install add file flash:{{ ios_img_9300L }} activate commit prompt-level none"
+      check_all: True
+      prompt: 
+        - "[y/n/q]"
+        - "[y/n]"
+      answer: 
+        - "y"
+        - "y"
+    when: 
+      - ansible_net_version is version('16.06.02', '>=')
+      - md5_result.stdout_lines is search( ios_md5_9300L )
+    vars:
+       ansible_command_timeout: 1200
+
+  - name: Wait 600 seconds for target connection with delay of 120sec
+    wait_for_connection:
+      delay: 120
+  
+  - name: Gather min facts for version checking
+    ios_facts:
+      gather_subset: min 
+
+  - name: ASSERT THAT THE IOS VERSION IS CORRECT
+    assert:
+      that:
+        - ios_ver_9300L == ansible_net_version
+    ignore_errors: yes
+  
+
+    
+
+      

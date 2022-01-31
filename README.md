@@ -5,6 +5,9 @@
 - HPE IMC (network management system)
 - Paessler PRTG (monitoring)
 - Ruckus/Commscope virtual SmartZone (v5.x) (WLAN controller)
+- Ansible playbooks for:
+  - IOS-XE
+  - NX-OS
 
 Use the scripts as a learning/inspiration source and do not run the script directly against a production network!
 Always test it in your LAB environment first.

@@ -1,0 +1,45 @@
+# name of the section at the inventory file (switches)
+- hosts: switches
+  gather_facts: false
+  vars:
+    cfg_ntp:
+          - ntp server <INSERT_NTP_SERVER_1>
+          - ntp server <INSERT_NTP_SERVER_2>
+ 
+  tasks:
+
+  - ios_facts:
+      gather_subset:
+        - config
+    register: running
+
+#  - debug:
+#       var: running.ansible_facts.ansible_net_config.splitlines()
+
+
+  - name: Processing the currently configured values with our desired values
+    set_fact:
+      extra_ntp_srvs: "{{ running.ansible_facts.ansible_net_config.splitlines() | select('match', '^ntp.*') | difference(cfg_ntp) }}"
+
+  - name: Printing extra ntp servers
+    debug:
+       var: extra_ntp_srvs
+
+  - name: Printing a debug msg for when we have no extra ntp servers configured
+    debug:
+      msg: NTP Servers are correct
+    when: extra_ntp_srvs == []
+
+
+  - name: If there are is missing NTP servers from baseline this task will create them
+    ios_config:
+      lines: "{{ item }}"
+      match: line
+    with_items: "{{ cfg_ntp }}"
+
+
+  - name: If there are extra NTP servers configured this task will remove them
+    ios_config:
+      lines: "no {{ item }}"
+    with_items: "{{ extra_ntp_srvs }}"
+
