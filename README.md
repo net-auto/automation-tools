@@ -1,4 +1,4 @@
-**Network automation script collection for different platform:**
+**Network automation script collection for different platforms:**
 --
 
 - comware 7 (also on-box scripts)
