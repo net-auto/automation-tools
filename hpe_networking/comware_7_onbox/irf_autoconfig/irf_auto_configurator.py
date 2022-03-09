@@ -102,10 +102,10 @@ def set_base_config(mgmt_vlan, startup_file):
     """
     # create SSH key (RSA/1048) and enable SSH (with comware module,
     # -> only default 1048 bit (non fips mode) is possible
-
+    
     Disabled due to issues generating a new key at day 1 -> looks like the key files are locked
-    and do not have the right permissions.
-
+    do not have the right permissions.
+    
     create_ssh_key()
     startup_file.write("\nssh server enable" + "\n")
     startup_file.write("\n#" + "\n")
@@ -122,8 +122,8 @@ def set_base_config(mgmt_vlan, startup_file):
     startup_file.write("\n#" + "\n")
 
     startup_file.write("\nsnmp-agent" + "\n")
-    startup_file.write("\nsnmp-agent community read read" + "\n")
-    startup_file.write("\nsnmp-agent community write write" + "\n")
+    startup_file.write("\nsnmp-agent community read iMCread" + "\n")
+    startup_file.write("\nsnmp-agent community write iMCwrite" + "\n")
     startup_file.write("\nsnmp-agent sys-info version all" + "\n")
     startup_file.write("\n#" + "\n")
 
@@ -149,6 +149,8 @@ def set_base_config(mgmt_vlan, startup_file):
 
     # new version of day 1 mgmt interface config:
     mgmt_oob_interface = "M-GigabitEthernet0/0/0"
+    # TODO: configure the edge_trunk_interface based on the member-id
+    #       and not fixed. Example: {member-id}/0/1
     mgmt_edge_trunk_interface = "GigabitEthernet1/0/1"
     configure_day_1_mgmt_intf(startup_file=startup_file,
                               mgmt_intf=mgmt_oob_interface,
@@ -177,6 +179,7 @@ def configure_staging_trunk_intf(if_name, mgmt_vlan, startup_file):
     :param startup_file: startup_file reference
     :return: None
     """
+    print("CONFIGURING INTERFACE: {if_name} AS DAY 1 MGMT INTERFACE".format(if_name=if_name))
     startup_file.write("\nvlan " + mgmt_vlan + "\n")
     startup_file.write("\nname MGMT_LAN" + "\n")
     startup_file.write("\n#" + "\n")
@@ -190,6 +193,7 @@ def configure_staging_trunk_intf(if_name, mgmt_vlan, startup_file):
     startup_file.write("\ndescription TEMP_STAGING_TRUNK_INTERFACE" + "\n")
     startup_file.write("\nport link-type trunk" + "\n")
     startup_file.write("\nport trunk permit vlan all" + "\n")
+    startup_file.write("\nport trunk pvid vlan " + mgmt_vlan + "\n")
     startup_file.write("\n#" + "\n")
 
 
@@ -202,6 +206,7 @@ def configure_oob_ip_intf(if_name, startup_file):
     :param startup_file: startup_file reference
     :return: None
     """
+    print("CONFIGURING INTERFACE: {if_name} AS DAY 1 MGMT INTERFACE".format(if_name=if_name))
     startup_file.write("\nip vpn-instance mgmt\n")
     startup_file.write("\ndescription REMOVE_AFTER_DAY_1\n")
     startup_file.write("\n#" + "\n")
@@ -225,15 +230,19 @@ def configure_day_1_mgmt_intf(startup_file, mgmt_intf, edge_interface, mgmt_vlan
     :return:
     """
     get_dev_platform = comware.CLI('dis device manuinfo | in DEVICE_NAME', False).get_output()
-    for line in get_dev_platform:
-        if 'JG937A' not in line or 'Simware' not in line:  # 5130-48G-PoE+-4SFP+ (370W) and for Lab SIM (H3C)
-            configure_oob_ip_intf(if_name=mgmt_intf, startup_file=startup_file)
-            break
-        else:
+    if get_dev_platform:
+        model_data = get_dev_platform[1]  # includes first data field which contains the model ID
+        # 5130-48G-PoE+-4SFP+ (370W) and for Lab SIM (H3C)
+        if re.search('JG937A', model_data) or re.search('Simware', model_data):
             configure_staging_trunk_intf(if_name=edge_interface,
                                          mgmt_vlan=mgmt_vlan,
                                          startup_file=startup_file)
-            break
+        else:
+            configure_oob_ip_intf(if_name=mgmt_intf, startup_file=startup_file)
+    else:
+        print("COULD NOT CONFIGURE DAY 1 MGMT INTERFACE!\n")
+        print("CHECK comware.CLI() syntax/CMD output:\n")
+        print(get_dev_platform)
 
 
 def create_member_data(irf_members_file_object):
