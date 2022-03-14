@@ -37,7 +37,7 @@ ftp_pass = "<FTP_PASSWORD>"
 access_switch_ipe_file = "5130EI-CMW710-R3506P06.ipe"
 access_switch_ipe_file_md5 = "824C0C93835253B26E81A50130318EF2"
 access_switch_sw_release = "3506P06"
-access_switch_sw_check = True
+access_switch_sw_check = True  # False = disable the firmware version check/update procedure
 irf_file = "irf_members_mapping.txt"
 """
 
@@ -57,12 +57,13 @@ irf_prio_numbers = {
 
 # functions:
 
-def set_base_config(mgmt_vlan, startup_file):
+def set_base_config(member_id, mgmt_vlan, startup_file):
     """
     MGMT SVI will be set to DHCP
     Args:
-        startup_file:
+        startup_file: file reference for writing the config
         mgmt_vlan: MGMT VLAN
+        member_id: final member id
 
     Returns:
 
@@ -103,8 +104,9 @@ def set_base_config(mgmt_vlan, startup_file):
     # create SSH key (RSA/1048) and enable SSH (with comware module,
     # -> only default 1048 bit (non fips mode) is possible
     
-    Disabled due to issues generating a new key at day 1 -> looks like the key files are locked
-    do not have the right permissions.
+    Disabled due to issues generating a new key at day 1 -> looks like 
+    the key files are locked and do not have the right permissions
+    to delete the before generated keyfile
     
     create_ssh_key()
     startup_file.write("\nssh server enable" + "\n")
@@ -149,9 +151,9 @@ def set_base_config(mgmt_vlan, startup_file):
 
     # new version of day 1 mgmt interface config:
     mgmt_oob_interface = "M-GigabitEthernet0/0/0"
-    # TODO: configure the edge_trunk_interface based on the member-id
-    #       and not fixed. Example: {member-id}/0/1
-    mgmt_edge_trunk_interface = "GigabitEthernet1/0/1"
+
+    # use the member_id as interface identifier:
+    mgmt_edge_trunk_interface = "GigabitEthernet{member_identifier}/0/1".format(member_identifier=member_id)
     configure_day_1_mgmt_intf(startup_file=startup_file,
                               mgmt_intf=mgmt_oob_interface,
                               edge_interface=mgmt_edge_trunk_interface,
@@ -244,6 +246,25 @@ def configure_day_1_mgmt_intf(startup_file, mgmt_intf, edge_interface, mgmt_vlan
         print("CHECK comware.CLI() syntax/CMD output:\n")
         print(get_dev_platform)
 
+    """
+    for line in get_dev_platform:
+        
+        TODO:
+        - line has several entries and needs to be matched exactly
+        
+        # 5130-48G-PoE+-4SFP+ (370W) and for Lab SIM (H3C)
+        if re.search('JG937A', line) or re.search('Simware', line):
+            print("---DEBUG--- not matched line in day1 method: {line}".format(line=line))
+            configure_staging_trunk_intf(if_name=edge_interface,
+                                         mgmt_vlan=mgmt_vlan,
+                                         startup_file=startup_file)
+            break
+        else:
+            print("---DEBUG--- else line in day1 method: {line}".format(line=line))
+            configure_oob_ip_intf(if_name=mgmt_intf, startup_file=startup_file)
+            break
+        """
+
 
 def create_member_data(irf_members_file_object):
     """
@@ -332,7 +353,7 @@ def set_irf_config(irf_member_data, irf_priority_data, startup_file):
         mgmt_vlan = irf_member_data[switch_serial_number][1]
         # print("DEBUG MGMT_IP IRF_MEMBER_DATA:", irf_member_data)
         # mgmt_ip = irf_member_data[switch_serial_number][2]
-        set_base_config(mgmt_vlan=mgmt_vlan, startup_file=startup_file)
+        set_base_config(member_id=member_id, mgmt_vlan=mgmt_vlan, startup_file=startup_file)
 
     print("FOLLOWING MEMBER ID WILL BE USED/CONFIGURED: {memberId}".format(memberId=member_id))
     print("FOLLOWING MEMBER PRIORITY WILL BE USED/CONFIGURED: {set_prio}".format(set_prio=get_default_priority))
